@@ -34,7 +34,7 @@ public:
     // n_samples: Número de muestras a procesar
     void inference(DatosMLP* buffer_samples_gpu, Color* output_gpu, uint32_t n_samples);
 
-    void setBounds(const Vector3d& min, const Vector3d& max);
+    void setBounds(const Vector3d& min, const Vector3d& max, float t_min = 0.0f, float t_max = 1.0f);
 
     // Guardar modelo a disco (json con pesos)
     void save_model(const std::string& filename);

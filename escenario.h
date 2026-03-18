@@ -124,8 +124,10 @@ public:
 
     __device__ Color calcularLuzDirecta(const Vector3d& punto, const Vector3d& normal,
                                        const Primitiva* objeto_intersectado, TransientRender& transientRenderer,
-                                       int px, int py, double tiempo_acumulado, const Color& camino, double current_ior) const {
+                                       int px, int py, double tiempo_acumulado, double& tiempo_acumulado_NEE, const Color& camino,
+                                       double current_ior, bool depositar_transient = true) const {
         Color L_directa(0, 0, 0);
+        double mejor_tiempo_NEE = -1.0;
         
         for (int i = 0; i < num_luces; i++) {
             const LuzPuntual* luz = &luces[i];
@@ -163,14 +165,21 @@ public:
             // Actualizar transient render
             double tiempo_refraccion = (distancia * current_ior) / 299792458.0;
             double path_time = tiempo_acumulado + tiempo_refraccion;
+            if (mejor_tiempo_NEE < 0.0 || path_time < mejor_tiempo_NEE) {
+                mejor_tiempo_NEE = path_time;
+            }
             
-            transientRenderer.agregarMuestra(
-                px, 
-                py, 
-                path_time, 
-                camino * contrib
-            );
+            if (depositar_transient) {
+                transientRenderer.agregarMuestra(
+                    px,
+                    py,
+                    path_time,
+                    camino * contrib
+                );
+            }
         }
+
+        tiempo_acumulado_NEE = mejor_tiempo_NEE;
         
         return L_directa;
     }

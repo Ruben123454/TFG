@@ -36,7 +36,7 @@ __global__ void kernelRender(const Camara* camara, const Primitiva* primitivas, 
                             TransientRender transientRenderer, 
                             curandState* rand_states, 
                             unsigned int* dev_counter, RegistroEntrenamiento* buffer_registros, unsigned int* counter_train, int max_cap_train,
-                            DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red);
+                            DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red, int sample_idx);
 
 __global__ void kernelCalcularTargets(
     RegistroEntrenamiento* buffer_registros, 
@@ -49,13 +49,6 @@ __global__ void kernelPrepararInferenciaTail(
     const RegistroEntrenamiento* __restrict__ source_registros,
     DatosMLP* __restrict__ dest_inference_inputs,
     int num_elements
-);
-
-__global__ void kernelShuffle(
-    const DatosMLP* __restrict__ input_data,
-    DatosMLP* __restrict__ shuffled_data,
-    unsigned int num_elements,
-    curandState* __restrict__ rand_states
 );
 
 // Estructura para almacenar hiperparámetros probados
@@ -159,7 +152,7 @@ tcnn::json ejecutarGridSearch(
                             {"otype", "Composite"},
                             {"nested", {
                                 {
-                                    {"n_dims_to_encode", 3},
+                                    {"n_dims_to_encode", 4}, // Posición (3) + Tiempo (1)
                                     {"otype", "HashGrid"},
                                     {"n_levels", 16},
                                     {"n_features_per_level", 2},
@@ -168,28 +161,29 @@ tcnn::json ejecutarGridSearch(
                                     {"per_level_scale", 1.5f}
                                 },
                                 {
-                                    {"n_dims_to_encode", 6},
+                                    {"n_dims_to_encode", 6}, // Dirección (3) + Normal (3)
                                     {"otype", "OneBlob"},
                                     {"n_bins", bins}
                                 },
                                 {
-                                    {"n_dims_to_encode", 6},
+                                    {"n_dims_to_encode", 6}, // Difuso (3) + Especular (3)
                                     {"otype", "Identity"}
                                 }
                             }}
                         }},
+
                         {"network", {
                             {"otype", "FullyFusedMLP"},
                             {"activation", "ReLU"},
-                            {"output_activation", "Exponential"},
+                            {"output_activation", "None"},
                             {"n_neurons", n},
                             {"n_hidden_layers", l}
                         }},
-                        {"loss", {{"otype", "RelativeL2"}}},
+                        {"loss", {{"otype", "SMAPE"}}},
                         {"optimizer", {
                             {"otype", "EMA"},
                             {"decay", ema_d},
-                            {"full_precision", false},
+                            {"full_precision", true},
                             {"nested", {
                                 {"otype", "Adam"},
                                 {"learning_rate", lr}
@@ -197,8 +191,8 @@ tcnn::json ejecutarGridSearch(
                         }}
                     };
 
-                    auto mlp = std::make_unique<ColorMLP>(15, 3, 1<<16, config);
-                    mlp->setBounds(scene_bounds.min, scene_bounds.max);
+                    auto mlp = std::make_unique<ColorMLP>(16, 3, 1<<17, config);
+                    mlp->setBounds(scene_bounds.min, scene_bounds.max, scene_bounds.t_min, scene_bounds.t_max);
                     
                     float total_loss = 0.0f;
                     int test_frames = 100; 
@@ -216,7 +210,7 @@ tcnn::json ejecutarGridSearch(
                             d_nodos, d_prims_bvh, n_nodos_bvh, 
                             img_gpu, tr, d_rand, 
                             nullptr, d_registros, d_counter, num_pixels, 
-                            d_infer, d_throu, false, true);
+                            d_infer, d_throu, false, true, f);
                         cudaDeviceSynchronize();
                         
                         unsigned int n_valid = 0;
@@ -232,24 +226,9 @@ tcnn::json ejecutarGridSearch(
                             mlp->inference(d_tail_inputs, d_tail_pred, n_valid);
                             kernelCalcularTargets<<<blocks_1d, threads>>>(d_registros, d_tail_pred, d_train_final, n_valid);
                             
-                            // Shuffle
-                            kernelShuffle<<<blocks_1d, threads>>>(
-                                d_train_final, 
-                                d_train_final,
-                                n_valid,
-                                d_rand
-                            );
                             cudaDeviceSynchronize();
-                            
-                            // Dividir en 4 batches
-                            int s_batches = 4;
-                            int l_records_per_batch = (n_valid / s_batches) * s_batches / 4;
-                            
-                            float current_loss = 0.0f;
-                            for(int k = 0; k < s_batches; k++) {
-                                DatosMLP* batch_ptr = d_train_final + (k * l_records_per_batch);
-                                current_loss = mlp->train_step(batch_ptr, l_records_per_batch);
-                            }
+
+                            float current_loss = mlp->train_step(d_train_final, n_valid);
 
                             if (f >= 10) {
                                 total_loss += current_loss;
@@ -320,7 +299,7 @@ tcnn::json ejecutarGridSearch(
             {"otype", "Composite"},
             {"nested", {
                 { 
-                    {"n_dims_to_encode", 3}, 
+                    {"n_dims_to_encode", 4}, // Posición (3) + Tiempo (1)
                     {"otype", "HashGrid"},
                     {"n_levels", 16},
                     {"n_features_per_level", 2},
@@ -329,12 +308,12 @@ tcnn::json ejecutarGridSearch(
                     {"per_level_scale", 1.5f}
                 },
                 { 
-                    {"n_dims_to_encode", 6}, 
+                    {"n_dims_to_encode", 6}, // Dirección (3) + Normal (3)
                     {"otype", "OneBlob"}, 
                     {"n_bins", best_params.n_bins}
                 },
                 { 
-                    {"n_dims_to_encode", 6}, 
+                    {"n_dims_to_encode", 6}, // Difuso (3) + Especular (3)
                     {"otype", "Identity"}
                 }
             }}
@@ -342,15 +321,15 @@ tcnn::json ejecutarGridSearch(
         {"network", {
             {"otype", "FullyFusedMLP"}, 
             {"activation", "ReLU"},
-            {"output_activation", "Exponential"},
+            {"output_activation", "None"},
             {"n_neurons", best_params.n_neurons},
             {"n_hidden_layers", best_params.n_layers}
         }},
-        {"loss", {{"otype", "RelativeL2"}}},
+        {"loss", {{"otype", "SMAPE"}}},
         {"optimizer", {
             {"otype", "EMA"},
             {"decay", best_params.ema_decay},
-            {"full_precision", false},
+            {"full_precision", true},
             {"nested", {
                 {"otype", "Adam"},
                 {"learning_rate", best_params.learning_rate}

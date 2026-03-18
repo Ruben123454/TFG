@@ -48,6 +48,10 @@ public:
         return true;
     }
 
+    const Uint8* getEstadoTeclado() {
+        return SDL_GetKeyboardState(NULL);
+    }
+
     float acesFilmic(float x) const {
         const float a = 2.51f;
         const float b = 0.03f;

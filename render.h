@@ -30,238 +30,323 @@ public:
     __device__ Render(double rr = 0.9, int spp = 100) : 
                             russian_roulette_prob(rr), samples_per_pixel(spp) {}
 
-    __device__ Color lanzarRayoIterativo(const Rayo& r_inicial, const Escenario& escena, curandState* rand_state, int px, int py, TransientRender& transientRenderer, 
+    __device__ Color lanzarRayoIterativo(const Rayo& r_inicial, const Escenario& escena, curandState* rand_state, int px, int py, int sample_idx, TransientRender& transientRenderer, 
                                     RegistroEntrenamiento& registro_train, bool& guardar_train,
                                     DatosMLP& datos_inf, Color& throughput_inf, bool& necesita_inf, bool es_ruta_entrenamiento, bool usar_red_inferencia) {
-    Color color(0, 0, 0);
-    Color camino(1, 1, 1); 
-    Rayo rayo_actual = r_inicial;
-    double current_ior = 1.0;
-    double tiempo_acumulado = 0.0;
+        Color color(0, 0, 0);
+        Color camino(1, 1, 1); 
+        Rayo rayo_actual = r_inicial;
+        double current_ior = 1.0;
+        double tiempo_acumulado = 0.0;
 
-    guardar_train = false;
-    necesita_inf = false;
+        guardar_train = false;
+        necesita_inf = false;
 
-    // Variables para capturar el target de entrenamiento
-    Color throughput_at_train_vertex(0,0,0);
-    Color color_acumulado_pre_train(0,0,0);
-    bool punto_entrenamiento_encontrado = false;
-    int rebotes_sufijo = 0;
+        // Variables para capturar el target de entrenamiento
+        Color throughput_at_train_vertex(0,0,0);
+        Color color_acumulado_pre_train(0,0,0);
+        bool punto_entrenamiento_encontrado = false;
+        int rebotes_sufijo = 0;
 
-    // Variables footprint
-    float a_0 = 0.0f; // Footprint proyectado del píxel primario
-    float a_current = 0.0f; // Footprint acumulado del subpath hasta el rebote actual
-    float a_suffix = 0.0f; // Footprint exclusivo para el sufijo de entrenamiento
-    float a_prefix = 0.0f; // Footprint del prefijo al momento de grabar el head (para terminar el sufijo)
-    bool footprint_suficiente = false;
-    
-    int profundidad = 0;
-    
-    float pdf_ultimo_rebote = 1.0f;
-    bool ultimo_fue_especular = false;
-
-    int max_depth_actual = 20;
-
-    bool es_ruta_insesgada = es_ruta_entrenamiento && (curand_uniform(rand_state) < 0.0625f);
-
-    while(profundidad < max_depth_actual) {
-
-        float t_interseccion;
-        const Primitiva* primitiva_intersectada;
-        float u = 0.0f, v = 0.0f;
+        // Variables footprint
+        float a_0 = 0.0f; // Footprint proyectado del píxel primario
+        float a_current = 0.0f; // Footprint acumulado del subpath hasta el rebote actual
+        float a_suffix = 0.0f; // Footprint exclusivo para el sufijo de entrenamiento
+        float a_prefix = 0.0f; // Footprint del prefijo al momento de grabar el head (para terminar el sufijo)
+        bool footprint_suficiente = false;
         
-        if(escena.intersectaPrimitivasBVH(rayo_actual, t_interseccion, &primitiva_intersectada, u, v)) {
-            Vector3d punto_interseccion = rayo_actual.origen() + rayo_actual.direccion() * t_interseccion;
-            Vector3d normal = escena.calcularNormal(primitiva_intersectada, punto_interseccion, u, v);
+        int profundidad = 0;
+        
+        float pdf_ultimo_rebote = 1.0f;
+        bool ultimo_fue_especular = false;
 
-            Vector3d direccion_vista = -rayo_actual.direccion().normalized();
+        int max_depth_actual = 20;
+
+        bool es_ruta_insesgada = es_ruta_entrenamiento && (curand_uniform(rand_state) < 0.0625f);
+
+        double tiempo_acumulado_NEE = 0.0; // Tiempo acumulado solo para NEE (iluminación directa)
+        double tiempo_camara_head = 0.0;
+
+        while(profundidad < max_depth_actual) {
+
+            float t_interseccion;
+            const Primitiva* primitiva_intersectada;
+            float u = 0.0f, v = 0.0f;
             
-            float cos_theta = abs(normal.dot(-rayo_actual.direccion()));
+            if(escena.intersectaPrimitivasBVH(rayo_actual, t_interseccion, &primitiva_intersectada, u, v)) {
 
-            bool es_difuso = (primitiva_intersectada->difuso.max() > EPSILON);
-            bool es_especular = (primitiva_intersectada->especular.max() > EPSILON);          
+                Vector3d punto_interseccion = rayo_actual.origen() + rayo_actual.direccion() * t_interseccion;
+                Vector3d normal = escena.calcularNormal(primitiva_intersectada, punto_interseccion, u, v);
 
-            tiempo_acumulado += (t_interseccion * current_ior) / 299792458.0;
-
-            float dist_sq = t_interseccion * t_interseccion;
-            if (profundidad == 0) {
-                // a_0: Footprint proyectado del píxel primario
-                a_0 = dist_sq / (4.0f * pi * fmaxf(cos_theta, 1e-4f));
-                a_current = 0.0f; // El footprint del subpath empieza en 0
-            } else {
-                // a(x1...xn): Acumulamos la dispersión del subpath
-                float spread_step = dist_sq / (fmaxf(pdf_ultimo_rebote, 1e-4f) * fmaxf(cos_theta, 1e-4f));
+                Vector3d direccion_vista = -rayo_actual.direccion().normalized();
                 
-                if (!punto_entrenamiento_encontrado) {
-                    a_current += spread_step;
+                float cos_theta = abs(normal.dot(-rayo_actual.direccion()));
+
+                bool es_difuso = (primitiva_intersectada->difuso.max() > EPSILON);
+                bool es_especular = (primitiva_intersectada->especular.max() > EPSILON);          
+
+                tiempo_acumulado += (t_interseccion * current_ior) / 299792458.0;
+
+                float dist_sq = t_interseccion * t_interseccion;
+                if (profundidad == 0) {
+                    // a_0: Footprint proyectado del píxel primario
+                    a_0 = dist_sq / (4.0f * pi * fmaxf(cos_theta, 1e-4f));
+                    a_current = 0.0f; // El footprint del subpath empieza en 0
                 } else {
-                    a_suffix += spread_step;
+                    // a(x1...xn): Acumulamos la dispersión del subpath
+                    float spread_step = dist_sq / (fmaxf(pdf_ultimo_rebote, 1e-4f) * fmaxf(cos_theta, 1e-4f));
+                    
+                    if (!punto_entrenamiento_encontrado) {
+                        a_current += spread_step;
+                    } else {
+                        a_suffix += spread_step;
+                    }
                 }
-            }
 
-            footprint_suficiente = (a_current >= a_0 * 0.01f);
+                footprint_suficiente = (a_current >= a_0 * 0.01f);
 
-            Color Le = primitiva_intersectada->emision;
-            if (Le.max() > 0.0f) {
-                Color contrib = camino * Le;
-                color = color + contrib;
+                Color Le = primitiva_intersectada->emision;
+                if (Le.max() > 0.0f) {
+                    Color contrib = camino * Le;
+                    color = color + contrib;
+
+                    if (punto_entrenamiento_encontrado) {
+                        registro_train.tail.posicion = punto_interseccion;
+                        registro_train.tail.direccion = -rayo_actual.direccion().normalized();
+                        registro_train.tail.normal = normal;
+                        registro_train.tail.difuso = Color(0,0,0);
+                        registro_train.tail.especular = Color(0,0,0);
+
+
+                        registro_train.tail.tiempo = 0.0f;
+                        // Tiempo desde el head hasta la luz (target para el MLP)
+                        double delta_t_head_tail = tiempo_acumulado - tiempo_camara_head;
+                        registro_train.head.tiempo = (float)delta_t_head_tail;
+
+
+                        // La luz total recolectada por el sufijo
+                        registro_train.luz_acumulada_sufijo = color - color_acumulado_pre_train;
+                        registro_train.throughput_sufijo = Color(0,0,0);
+                        registro_train.factor_normalizacion = throughput_at_train_vertex;
+                        registro_train.valido = true;
+                        guardar_train = true;
+                    }
+
+                    // Solo depositar en transient si no estamos en el sufijo de una ruta de entrenamiento
+                    if (!(es_ruta_entrenamiento && punto_entrenamiento_encontrado)) {
+                        transientRenderer.agregarMuestra(px, py, tiempo_acumulado, contrib);
+                    }
+                    break;
+                }
+
+                // NEE (Luz Directa)
+                if(es_difuso) {
+                    Vector3d punto_sombra = punto_interseccion + normal * EPSILON;
+                    bool depositar_transient_nee = !(es_ruta_entrenamiento && punto_entrenamiento_encontrado);
+                    Color L_dir = escena.calcularLuzDirecta(punto_interseccion, normal, primitiva_intersectada, 
+                                                                transientRenderer, px, py, tiempo_acumulado, 
+                                                                tiempo_acumulado_NEE, camino, current_ior, depositar_transient_nee);
+                    Color contrib_nee = camino * L_dir;
+                    color = color + contrib_nee;
+                }
+                
 
                 if (punto_entrenamiento_encontrado) {
-                    registro_train.tail.posicion = punto_interseccion;
-                    registro_train.tail.direccion = -rayo_actual.direccion().normalized();
-                    registro_train.tail.normal = normal;
-                    registro_train.tail.difuso = Color(0,0,0);
-                    registro_train.tail.especular = Color(0,0,0);
-                    // La luz total recolectada por el sufijo
-                    registro_train.luz_acumulada_sufijo = color - color_acumulado_pre_train;
-                    registro_train.throughput_sufijo = Color(0,0,0);
-                    registro_train.factor_normalizacion = throughput_at_train_vertex;
-                    registro_train.valido = true;
-                    guardar_train = true;
+                    rebotes_sufijo++;
+
+                    bool terminar_sufijo = !es_ruta_insesgada && (a_suffix >= a_prefix);
+                    Color reflectancia_tail = primitiva_intersectada->difuso + primitiva_intersectada->especular + primitiva_intersectada->transmision;
+
+                    if (terminar_sufijo) { // Bootstrapping del sufijo de entrenamiento
+
+                        // Pasar de [-1, 1] a [0, 1]
+                        direccion_vista = direccion_vista.normalized();
+                        normal = normal.normalized();
+                        Vector3d dir_mapped = Vector3d(direccion_vista.x * 0.5f + 0.5f, 
+                                                    direccion_vista.y * 0.5f + 0.5f, 
+                                                    direccion_vista.z * 0.5f + 0.5f);
+                        Vector3d norm_mapped = Vector3d(normal.x * 0.5f + 0.5f, 
+                                                        normal.y * 0.5f + 0.5f, 
+                                                        normal.z * 0.5f + 0.5f);
+
+                        // Tiempo desde la luz hasta el tail
+                        double tiempo_luz_tail = fmax(0.0, tiempo_acumulado_NEE - tiempo_acumulado);
+                        registro_train.tail.tiempo = (float)tiempo_luz_tail;
+                        // Tiempo desde el head hasta el tail
+                        double delta_t_head_tail = tiempo_acumulado - tiempo_camara_head;
+                        // Tiempo desde el head hasta la luz (target para el MLP)
+                        registro_train.head.tiempo = (float)(tiempo_luz_tail + delta_t_head_tail);
+
+                        registro_train.tail.posicion = punto_interseccion;
+                        registro_train.tail.direccion = dir_mapped;
+                        registro_train.tail.normal = norm_mapped;
+                        registro_train.tail.difuso = primitiva_intersectada->difuso;
+                        registro_train.tail.especular = primitiva_intersectada->especular;
+                        registro_train.luz_acumulada_sufijo = color - color_acumulado_pre_train;
+                        
+                        registro_train.throughput_sufijo = camino * reflectancia_tail;
+                        registro_train.factor_normalizacion = throughput_at_train_vertex;
+                        registro_train.valido = true;
+                        guardar_train = true;
+                        break;
+                    }
                 }
 
-                transientRenderer.agregarMuestra(px, py, tiempo_acumulado, contrib);
-                break;
-            }
-
-            // NEE (Luz Directa)
-            if(es_difuso) {
-                Vector3d punto_sombra = punto_interseccion + normal * EPSILON;
-                Color L_dir = escena.calcularLuzDirecta(punto_sombra, normal, primitiva_intersectada, transientRenderer, 0, 0, 0, camino, current_ior);
-                Color contrib_nee = camino * L_dir;
-                color = color + contrib_nee;
-            }
-            
-
-            if (punto_entrenamiento_encontrado) {
-                rebotes_sufijo++;
-
-                bool terminar_sufijo = !es_ruta_insesgada && (a_suffix >= a_prefix);
-                Color reflectancia_tail = primitiva_intersectada->difuso + primitiva_intersectada->especular + primitiva_intersectada->transmision;
-
-                if (terminar_sufijo) { // Bootstrapping del sufijo de entrenamiento
+                // Decidir si el rebote actual es parte del sufijo de entrenamiento o no, y capturar datos para la inferencia
+                if(es_difuso && !es_especular && footprint_suficiente) {
+                    Color reflectancia = primitiva_intersectada->difuso + primitiva_intersectada->especular + primitiva_intersectada->transmision;
+                    float min_refl = 1e-3f; 
+                    reflectancia.r = fmaxf(reflectancia.r, min_refl);
+                    reflectancia.g = fmaxf(reflectancia.g, min_refl);
+                    reflectancia.b = fmaxf(reflectancia.b, min_refl);
 
                     // Pasar de [-1, 1] a [0, 1]
                     Vector3d dir_mapped = Vector3d(direccion_vista.x * 0.5f + 0.5f, 
                                                 direccion_vista.y * 0.5f + 0.5f, 
                                                 direccion_vista.z * 0.5f + 0.5f);
+                    
                     Vector3d norm_mapped = Vector3d(normal.x * 0.5f + 0.5f, 
                                                     normal.y * 0.5f + 0.5f, 
                                                     normal.z * 0.5f + 0.5f);
+                                                    
+                    if (!es_ruta_entrenamiento && usar_red_inferencia) { // Capturar datos para inferencia
+                        // Muestrear T_target con jittering temporal estratificado
+                        double t_start = transientRenderer.t_start; 
+                        double t_final = transientRenderer.t_end;
+                        int num_bins_t = transientRenderer.num_frames;
+                        double dt_bin = (t_final - t_start) / (double)num_bins_t;
+                        unsigned int pixel_hash = (unsigned int)(px * 73856093u) ^ (unsigned int)(py * 19349663u);
+                        int bin_idx = (sample_idx + (int)(pixel_hash % (unsigned int)num_bins_t)) % num_bins_t;
+                        float jitter = curand_uniform(rand_state); // jitter intra-bin en [0,1)
+                        double T_target = t_start + ((double)bin_idx + (double)jitter) * dt_bin;
 
-                    registro_train.tail.posicion = punto_interseccion;
-                    registro_train.tail.direccion = dir_mapped;
-                    registro_train.tail.normal = norm_mapped;
-                    registro_train.tail.difuso = primitiva_intersectada->difuso;
-                    registro_train.tail.especular = primitiva_intersectada->especular;
+                        // Evitar salir por redondeo en el último bin
+                        if (T_target >= t_final) {
+                            T_target = t_final - 1e-12;
+                        }
+
+                        // Tiempo que le pasamos a la red quitando el tiempo acumulado del camino hasta ahora, 
+                        // para que la red aprenda a predecir el tiempo restante hasta la luz
+                        double t_input = T_target - tiempo_acumulado; 
+
+                        if (t_input >= t_start && t_input < t_final) {
+                            // Capturar datos para inferencia
+                            datos_inf.posicion = punto_interseccion; 
+                            datos_inf.direccion = dir_mapped;
+                            datos_inf.normal = norm_mapped; 
+                            datos_inf.difuso = primitiva_intersectada->difuso; 
+                            datos_inf.especular = primitiva_intersectada->especular;
+                            
+                            // Pasamos el tiempo real de iluminación a la red
+                            datos_inf.tiempo = (float)t_input; 
+                            // Guardamos el tiempo de la cámara en delta_t para reconstruir el tiempo total
+                            datos_inf.delta_t = (float)tiempo_acumulado; 
+
+                            throughput_inf = camino * reflectancia; 
+                            
+                            float max_th = 5.0f; 
+                            throughput_inf.r = fminf(throughput_inf.r, max_th);
+                            throughput_inf.g = fminf(throughput_inf.g, max_th);
+                            throughput_inf.b = fminf(throughput_inf.b, max_th);
+
+                            necesita_inf = true;
+                        } else {
+                            // En este instante T_target sorteado, la luz aún no ha llegado físicamente aquí.
+                            necesita_inf = false;
+                        }
+                        break;
+                    } else if (es_ruta_entrenamiento && !punto_entrenamiento_encontrado) { // Capturar datos para entrenamiento
+                        tiempo_camara_head = tiempo_acumulado;
+
+                        registro_train.head.posicion = punto_interseccion; 
+                        registro_train.head.direccion = dir_mapped;
+                        registro_train.head.normal = norm_mapped; 
+                        registro_train.head.difuso = primitiva_intersectada->difuso; 
+                        registro_train.head.especular = primitiva_intersectada->especular;
+                        throughput_at_train_vertex = camino * reflectancia;
+                        color_acumulado_pre_train = color; 
+                        a_prefix = a_current; // Guardar footprint del prefijo para comparar con el sufijo
+                        punto_entrenamiento_encontrado = true;
+                    }
+                }
+
+                // Luz indirecta
+                calcularLuzIndirecta(rand_state, rayo_actual, camino, r_inicial, 
+                                punto_interseccion, normal, primitiva_intersectada, current_ior, pdf_ultimo_rebote, ultimo_fue_especular);
+
+                // Ruleta rusa
+                if(profundidad > 10) {
+                    double prob = fmax(camino.r, fmax(camino.g, camino.b));
+                    if (prob > 0.95) prob = 0.95;
+                    if (curand_uniform(rand_state) > prob) {
+                        // Si estábamos en medio del sufijo, registramos el fin del rayo
+                        if (es_ruta_entrenamiento && punto_entrenamiento_encontrado) {
+                            // Tiempo desde la luz hasta el tail
+                            double tiempo_luz_tail = fmax(0.0, tiempo_acumulado_NEE - tiempo_acumulado);
+                            registro_train.tail.tiempo = (float)tiempo_luz_tail;
+                            // Tiempo desde el head hasta el tail
+                            double delta_t_head_tail = tiempo_acumulado - tiempo_camara_head;
+                            // Tiempo desde el head hasta la luz (target para el MLP)
+                            registro_train.head.tiempo = (float)(tiempo_luz_tail + delta_t_head_tail);
+
+                            registro_train.luz_acumulada_sufijo = color - color_acumulado_pre_train;
+                            registro_train.throughput_sufijo = Color(0,0,0); // El tail no aporta red porque acabó el rayo
+                            registro_train.factor_normalizacion = throughput_at_train_vertex;
+                            registro_train.valido = true;
+                            guardar_train = true;
+                        }
+                        break;
+                    }
+                    camino = camino / prob;
+                }
+                        
+            
+            } else { // No hay intersección
+                Color color_fondo(0, 0, 0);
+                color = color + camino * color_fondo;
+                if (es_ruta_entrenamiento && punto_entrenamiento_encontrado) {
+                    // Si el sufijo sale de la escena, el tail es el fondo (negro)
                     registro_train.luz_acumulada_sufijo = color - color_acumulado_pre_train;
-                    
-                    registro_train.throughput_sufijo = camino * reflectancia_tail;
+                    registro_train.throughput_sufijo = Color(0,0,0); 
                     registro_train.factor_normalizacion = throughput_at_train_vertex;
                     registro_train.valido = true;
                     guardar_train = true;
-                    break;
                 }
+                break;
             }
-
-            // Decidir si el rebote actual es parte del sufijo de entrenamiento o no, y capturar datos para la inferencia
-            if(es_difuso && !es_especular && footprint_suficiente) {
-                Color reflectancia = primitiva_intersectada->difuso + primitiva_intersectada->especular + primitiva_intersectada->transmision;
-                float min_refl = 1e-3f; 
-                reflectancia.r = fmaxf(reflectancia.r, min_refl);
-                reflectancia.g = fmaxf(reflectancia.g, min_refl);
-                reflectancia.b = fmaxf(reflectancia.b, min_refl);
-
-                // 2. ONEBLOB MAPPING: Pasar de [-1, 1] a [0, 1]
-                Vector3d dir_mapped = Vector3d(direccion_vista.x * 0.5f + 0.5f, 
-                                            direccion_vista.y * 0.5f + 0.5f, 
-                                            direccion_vista.z * 0.5f + 0.5f);
-                
-                Vector3d norm_mapped = Vector3d(normal.x * 0.5f + 0.5f, 
-                                                normal.y * 0.5f + 0.5f, 
-                                                normal.z * 0.5f + 0.5f);
-                                                
-                if (!es_ruta_entrenamiento && usar_red_inferencia) { // Capturar datos para inferencia
-                    datos_inf.posicion = punto_interseccion; 
-                    datos_inf.direccion = dir_mapped;
-                    datos_inf.normal = norm_mapped; 
-                    datos_inf.difuso = primitiva_intersectada->difuso; 
-                    datos_inf.especular = primitiva_intersectada->especular;
-                    throughput_inf = camino * reflectancia;
-                    necesita_inf = true;
-                    break; 
-                } else if (es_ruta_entrenamiento && !punto_entrenamiento_encontrado) { // Capturar datos para entrenamiento
-                    registro_train.head.posicion = punto_interseccion; 
-                    registro_train.head.direccion = dir_mapped;
-                    registro_train.head.normal = norm_mapped; 
-                    registro_train.head.difuso = primitiva_intersectada->difuso; 
-                    registro_train.head.especular = primitiva_intersectada->especular;
-                    throughput_at_train_vertex = camino * reflectancia;
-                    color_acumulado_pre_train = color; 
-                    a_prefix = a_current; // Guardar footprint del prefijo para comparar con el sufijo
-                    punto_entrenamiento_encontrado = true;
-                }
-            }
-
-            // Luz indirecta
-            calcularLuzIndirecta(rand_state, rayo_actual, camino, r_inicial, 
-                            punto_interseccion, normal, primitiva_intersectada, current_ior, pdf_ultimo_rebote, ultimo_fue_especular);
-
-            // Ruleta rusa
-            if(profundidad > 10) {
-                double prob = fmax(camino.r, fmax(camino.g, camino.b));
-                if (prob > 0.95) prob = 0.95;
-                if (curand_uniform(rand_state) > prob) {
-                    // Si estábamos en medio del sufijo, registramos el fin del rayo
-                    if (es_ruta_entrenamiento && punto_entrenamiento_encontrado) {
-                        registro_train.luz_acumulada_sufijo = color - color_acumulado_pre_train;
-                        registro_train.throughput_sufijo = Color(0,0,0); // El tail no aporta red porque acabó el rayo
-                        registro_train.factor_normalizacion = throughput_at_train_vertex;
-                        registro_train.valido = true;
-                        guardar_train = true;
-                    }
-                    break;
-                }
-                camino = camino / prob;
-            }
-                    
-           
-        } else { // No hay intersección
-            Color color_fondo(0, 0, 0);
-            color = color + camino * color_fondo;
-            if (es_ruta_entrenamiento && punto_entrenamiento_encontrado) {
-                // Si el sufijo sale de la escena, el tail es el fondo (negro)
-                registro_train.luz_acumulada_sufijo = color - color_acumulado_pre_train;
-                registro_train.throughput_sufijo = Color(0,0,0); 
-                registro_train.factor_normalizacion = throughput_at_train_vertex;
-                registro_train.valido = true;
-                guardar_train = true;
-            }
-            break;
+            profundidad++;
         }
-        profundidad++;
-    }
 
-    // Si el rayo alcanzó el max_depth y el sufijo nunca terminó, hay que cerrarlo
-    if (es_ruta_entrenamiento && punto_entrenamiento_encontrado && !guardar_train) {
-        registro_train.luz_acumulada_sufijo = color - color_acumulado_pre_train;
-        registro_train.throughput_sufijo = Color(0,0,0); 
-        registro_train.factor_normalizacion = throughput_at_train_vertex;
-        registro_train.valido = true;
-        guardar_train = true;
+        // Si el rayo alcanzó el max_depth y el sufijo nunca terminó, hay que cerrarlo
+        if (es_ruta_entrenamiento && punto_entrenamiento_encontrado && !guardar_train) {
+            // Tiempo desde la luz hasta el tail
+            double tiempo_luz_tail = fmax(0.0, tiempo_acumulado_NEE - tiempo_acumulado);
+            registro_train.tail.tiempo = (float)tiempo_luz_tail;
+            // Tiempo desde el head hasta el tail
+            double delta_t_head_tail = tiempo_acumulado - tiempo_camara_head;
+            // Tiempo desde el head hasta la luz (target para el MLP)
+            registro_train.head.tiempo = (float)(tiempo_luz_tail + delta_t_head_tail);
+
+            registro_train.luz_acumulada_sufijo = color - color_acumulado_pre_train;
+            registro_train.throughput_sufijo = Color(0,0,0); 
+            registro_train.factor_normalizacion = throughput_at_train_vertex;
+            registro_train.valido = true;
+            guardar_train = true;
+        }
+        if (es_ruta_entrenamiento && punto_entrenamiento_encontrado) {
+            color = color_acumulado_pre_train; // Descartamos la luz del sufijo para el píxel final
+            necesita_inf = true;
+            datos_inf.posicion = registro_train.head.posicion;
+            datos_inf.direccion = registro_train.head.direccion;
+            datos_inf.normal = registro_train.head.normal;
+            datos_inf.difuso = registro_train.head.difuso;
+            datos_inf.especular = registro_train.head.especular;
+            datos_inf.tiempo = registro_train.head.tiempo;
+            datos_inf.delta_t = (float)tiempo_camara_head;
+            throughput_inf = throughput_at_train_vertex;
+        }
+        return color;
     }
-    if (es_ruta_entrenamiento && punto_entrenamiento_encontrado) {
-        color = color_acumulado_pre_train; // Descartamos la luz del sufijo para el píxel final
-        necesita_inf = true;
-        datos_inf.posicion = registro_train.head.posicion;
-        datos_inf.direccion = registro_train.head.direccion;
-        datos_inf.normal = registro_train.head.normal;
-        datos_inf.difuso = registro_train.head.difuso;
-        datos_inf.especular = registro_train.head.especular;
-        throughput_inf = throughput_at_train_vertex;
-    }
-    return color;
-}
 
     __device__ void calcularLuzIndirecta(curandState* rand_state, Rayo& rayo_actual, Color& camino, const Rayo& r_inicial, 
                                  const Vector3d& punto_interseccion, const Vector3d& normal,
@@ -422,7 +507,7 @@ public:
                               unsigned int* dev_counter, 
                               RegistroEntrenamiento* buffer_training, unsigned int* counter_training, int max_cap_training,
                               // Datos para inferencia
-                              DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red) {
+                              DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red, int sample_idx) {
         
 
         // Calcular ID global del thread para acceder a su estado aleatorio
@@ -454,9 +539,9 @@ public:
         // Fase 1 (Warmup): entrenar_red=true, usar_red_inferencia=false → 100% entrenamiento
         // Fase 2 (Post-warmup a frame 80): entrenar_red=true, usar_red_inferencia=true → 3% entrena, 97% infiere
         // Fase 3 (Frame 80+): entrenar_red=false, usar_red_inferencia=true → 0% entrena, 100% infiere
-        bool es_training_pixel = entrenar_red ? (usar_red_inferencia ? (curand_uniform(rand_state) < 0.05f) : true) : false;
+        bool es_training_pixel = entrenar_red ? (usar_red_inferencia ? (curand_uniform(rand_state) < 0.20f) : true) : false;
 
-        Color color = lanzarRayoIterativo(rayo, escena, rand_state, x, y, transientRenderer, 
+        Color color = lanzarRayoIterativo(rayo, escena, rand_state, x, y, sample_idx, transientRenderer, 
                                             reg_train, guardar_train, 
                                             datos_inferencia, throughput_inferencia, necesita_inferencia, es_training_pixel, usar_red_inferencia);
 

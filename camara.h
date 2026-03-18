@@ -20,14 +20,14 @@ struct Camara {
     float ancho_plano, alto_plano;
     float distancia_focal;
     
-    __device__ Camara() = default;
+    __host__ __device__ Camara() = default;
     
-    __device__ Camara(Vector3d pos, Vector3d fr, Vector3d arr, Vector3d izq, 
+    __host__ __device__ Camara(Vector3d pos, Vector3d fr, Vector3d arr, Vector3d izq, 
                         float ancho_p, float alto_p, float dist_focal) 
         : posicion(pos), frente(fr), arriba(arr), izquierda(izq),
           ancho_plano(ancho_p), alto_plano(alto_p), distancia_focal(dist_focal) {}
 
-    __device__ Camara(const Vector3d& pos = Vector3d(0, 0, 0), 
+    __host__ __device__ Camara(const Vector3d& pos = Vector3d(0, 0, 0), 
            const Vector3d& f = Vector3d(0, 0, -1), 
            const Vector3d& a = Vector3d(0, 1, 0), 
            double ancho = 2.0, 

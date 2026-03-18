@@ -1,7 +1,6 @@
 // ################
 // Autores: 
 // Mir Ramos, Rubén 869039
-// Lopez Torralba, Alejandro 845154
 //
 // main.cu
 // ################
@@ -30,6 +29,7 @@
 #include <iomanip>
 #include <atomic>
 #include <memory>
+#include <cmath>
 #include <cuda_runtime.h>
 #include "imagen.h"
 #include "imagen_utils.h"
@@ -60,7 +60,7 @@ __global__ void kernelRender(const Camara* camara, const Primitiva* primitivas, 
                             // Datos para ENTRENAMIENTO
                             unsigned int* dev_counter, RegistroEntrenamiento* buffer_registros, unsigned int* counter_train, int max_cap_train,
                             // Datos para INFERENCIA
-                            DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red) { 
+                            DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red, int sample_idx) { 
 
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -73,7 +73,7 @@ __global__ void kernelRender(const Camara* camara, const Primitiva* primitivas, 
         renderer.renderizar(*camara, escena, ancho_img, alto_img, x, y, 
                             imagen_directa, transientRenderer, rand_states, 
                             dev_counter, buffer_registros, counter_train, max_cap_train,
-                            buffer_inference, buffer_throughput, usar_red_inferencia, entrenar_red);
+                            buffer_inference, buffer_throughput, usar_red_inferencia, entrenar_red, sample_idx);
     }
 }
 
@@ -100,6 +100,35 @@ __global__ void kernelComposite(Color* img_pt, Color* img_prediccion, Color* thr
     }
 }
 
+// Deposita la contribución NRC en los bins transient usando el tiempo acumulado del head
+__global__ void kernelTransientComposite(
+    DatosMLP* buffer_inference, Color* buffer_prediccion, Color* buffer_throughput,
+    TransientRender transientRenderer,
+    int ancho, int alto
+) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int idx = y * ancho + x;
+
+    if (x < ancho && y < alto) {
+        Color th = buffer_throughput[idx];
+        if (th.r > 0 || th.g > 0 || th.b > 0) {
+            Color contribucion = th * buffer_prediccion[idx];
+
+            // Evitar artefactos negros por NaN/Inf.
+            if (!isfinite(contribucion.r) || !isfinite(contribucion.g) || !isfinite(contribucion.b)) return;
+            contribucion.r = fmaxf(0.0f, contribucion.r);
+            contribucion.g = fmaxf(0.0f, contribucion.g);
+            contribucion.b = fmaxf(0.0f, contribucion.b);
+
+            // Tiempo total T_target = tiempo de luz (MLP) + tiempo de cámara (delta_t)
+            double tiempo_total = (double)buffer_inference[idx].tiempo + (double)buffer_inference[idx].delta_t;
+            
+            transientRenderer.agregarMuestra(x, y, tiempo_total, contribucion);
+        }
+    }
+}
+
 __global__ void setupRandomStates(curandState* states, unsigned long seed, int total_threads) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx < total_threads) {
@@ -119,74 +148,68 @@ void combinarEscenas(Primitiva** d_primitivas, int* num_primitivas, LuzPuntual**
     vector<Primitiva> host_primitivas;
     vector<LuzPuntual> host_luces;
 
-    /*
-    LuzPuntual luz_techo = {};
-    luz_techo.posicion = Vector3d(0, 2.8, -4.0);
-    luz_techo.intensidad = Color(100, 100, 100);
-    host_luces.push_back(luz_techo);
-    */
+    // --- 1. LUZ (Láser NLOS puntual) ---
+    LuzPuntual laser = {};
+    laser.posicion = Vector3d(2.0f, 0.0f, 4.0f); // Zona visible (X positivo)
+    laser.intensidad = Color(5000, 5000, 5000); // Subimos intensidad para compensar 3 rebotes
+    host_luces.push_back(laser);
 
-    // Pared izquierda (roja)
-    Primitiva pared_izq = {};
-    pared_izq.tipo = PLANO;
-    pared_izq.plano.normal = Vector3d(1, 0, 0);
-    pared_izq.plano.distancia = -3.0f;
-    pared_izq.emision = Color(0,0,0);
-    pared_izq.difuso = Color(0.65f, 0.05f, 0.05f);
-    pared_izq.especular = Color(0,0,0);
-    pared_izq.transmision = Color(0,0,0);
-    pared_izq.indice_refraccion = 1.0f;
-    host_primitivas.push_back(pared_izq);
-    
-    // Pared derecha (verde)
-    Primitiva pared_der = {};
-    pared_der.tipo = PLANO;
-    pared_der.plano.normal = Vector3d(-1, 0, 0);
-    pared_der.plano.distancia = -3.0f;
-    pared_der.emision = Color(0,0,0);
-    pared_der.difuso = Color(0.12f, 0.45f, 0.15f);
-    pared_der.especular = Color(0,0,0);
-    pared_der.transmision = Color(0,0,0);
-    pared_der.indice_refraccion = 1.0f;
-    host_primitivas.push_back(pared_der);
-    
-    // Suelo (gris)
+    // --- 2. RELAY WALL (Pared del fondo) ---
+    Primitiva relay_wall = {};
+    relay_wall.tipo = PLANO;
+    relay_wall.plano.normal = Vector3d(0, 0, 1);
+    relay_wall.plano.distancia = -6.0f; // Pared del fondo en Z = -6
+    relay_wall.emision = Color(0,0,0);
+    relay_wall.difuso = Color(0.8f, 0.8f, 0.8f); 
+    relay_wall.especular = Color(0,0,0);
+    relay_wall.transmision = Color(0,0,0);
+    relay_wall.indice_refraccion = 1.0f;
+    host_primitivas.push_back(relay_wall);
+
+    // --- 3. SUELO ---
     Primitiva suelo = {};
     suelo.tipo = PLANO;
     suelo.plano.normal = Vector3d(0, 1, 0);
-    suelo.plano.distancia = -3.0f;
+    suelo.plano.distancia = -2.0f; // Suelo en Y = -2
     suelo.emision = Color(0,0,0);
-    suelo.difuso = Color(0.73f, 0.73f, 0.73f);
+    suelo.difuso = Color(0.0f, 0.0f, 0.0f); // Suelo oscuro para evitar que contamine el rebote
     suelo.especular = Color(0,0,0);
     suelo.transmision = Color(0,0,0);
     suelo.indice_refraccion = 1.0f;
     host_primitivas.push_back(suelo);
-    
-    // Techo (gris)
-    Primitiva techo = {};
-    techo.tipo = PLANO;
-    techo.plano.normal = Vector3d(0, -1, 0);
-    techo.plano.distancia = -3.0f;
-    //techo.emision = Color(0.0f, 0.0f, 0.0f);
-    techo.emision = Color(5,5,5);
-    techo.difuso = Color(0.73f, 0.73f, 0.73f);
-    techo.especular = Color(0,0,0);
-    techo.transmision = Color(0,0,0);
-    techo.indice_refraccion = 1.0f;
-    host_primitivas.push_back(techo);
-    
-    // Pared fondo (gris)
-    Primitiva pared_fondo = {};
-    pared_fondo.tipo = PLANO;
-    pared_fondo.plano.normal = Vector3d(0, 0, 1);
-    pared_fondo.plano.distancia = -8.0f;
-    pared_fondo.emision = Color(0,0,0);
-    pared_fondo.difuso = Color(0.73f, 0.73f, 0.73f);
-    pared_fondo.especular = Color(0,0,0);
-    pared_fondo.transmision = Color(0,0,0);
-    pared_fondo.indice_refraccion = 1.0f;
-    host_primitivas.push_back(pared_fondo);
 
+    // --- 4. MURO OCLUSOR MASIVO ---
+    // Lo colocamos en Z = -2.0. Corta la visión desde X = -20 hasta X = 0.
+    // La cámara está en X = 2, por lo que solo verá la parte derecha (X > 0) de la Relay Wall.
+    Vector3d v0(0.0f, -5.0f,  5.0f); // Abajo, lado cámara
+    Vector3d v1(0.0f,  5.0f,  5.0f); // Arriba, lado cámara
+    Vector3d v2(0.0f, -5.0f, -2.0f); // Abajo, borde de la esquina
+    Vector3d v3(0.0f,  5.0f, -2.0f); // Arriba, borde de la esquina
+    
+    Primitiva muro_t1 = {};
+    muro_t1.tipo = TRIANGULO;
+    muro_t1.triangulo.v0 = v0;
+    muro_t1.triangulo.v1 = v1;
+    muro_t1.triangulo.v2 = v2;
+    muro_t1.emision = Color(0,0,0);
+    muro_t1.difuso = Color(0.0f, 0.0f, 0.0f); // Muro negro para que no contamine con rebotes
+    muro_t1.especular = Color(0,0,0);
+    muro_t1.transmision = Color(0,0,0);
+    muro_t1.indice_refraccion = 1.0f;
+    host_primitivas.push_back(muro_t1);
+
+    Primitiva muro_t2 = {};
+    muro_t2.tipo = TRIANGULO;
+    muro_t2.triangulo.v0 = v2;
+    muro_t2.triangulo.v1 = v1;
+    muro_t2.triangulo.v2 = v3;
+    muro_t2.emision = Color(0,0,0);
+    muro_t2.difuso = Color(0.0f, 0.0f, 0.0f);
+    muro_t2.especular = Color(0,0,0);
+    muro_t2.transmision = Color(0,0,0);
+    muro_t2.indice_refraccion = 1.0f;
+    host_primitivas.push_back(muro_t2);
+    
    
     // Copiar las primitivas manuales a la GPU
     cudaMalloc(d_primitivas, host_primitivas.size() * sizeof(Primitiva));
@@ -391,6 +414,7 @@ void inicializarEscena(Primitiva** d_primitivas, int* num_primitivas, LuzPuntual
             host_primitivas.size() << " primitivas, " << host_luces.size() << " luces puntuales" << endl;
 }
 
+
 // Inicializar cámara
 __global__ void inicializarCamara(Camara* d_camara, int ancho_imagen, int alto_imagen) {
     if (threadIdx.x == 0 && blockIdx.x == 0) {
@@ -409,6 +433,29 @@ __global__ void inicializarCamara(Camara* d_camara, int ancho_imagen, int alto_i
     }
 }
 
+/*
+__global__ void inicializarCamara(Camara* d_camara, int ancho_imagen, int alto_imagen) {
+    if (threadIdx.x == 0 && blockIdx.x == 0) {
+        float distancia_focal = 1.0f;
+        // Reducimos un poco el FOV para centrarnos en la pared
+        float fov_grados = 40.0f; 
+        float fov_radianes = fov_grados * M_PI / 180.0f;
+        float alto_plano = 2.0f * distancia_focal * tan(fov_radianes / 2.0f);
+        float ancho_plano = alto_plano * (static_cast<float>(ancho_imagen) / alto_imagen);
+        
+        Vector3d posicion(2.0f, 0.0f, 4.0f);
+        Vector3d frente(0.0f, 0.0f, -1.0f);
+        Vector3d arriba(0.0f, 1.0f, 0.0f);
+        
+        Vector3d posicion(4.0f, 6.0f, 5.0f);
+        Vector3d frente(-0.46f, -0.54f, -0.70f); 
+        Vector3d arriba(0.0f, 1.0f, 0.0f);
+        
+
+        *d_camara = Camara(posicion, frente, arriba, ancho_plano, alto_plano, distancia_focal);
+    }
+}
+*/
 // Inicializar estados aleatorios para cada thread
 curandState* inicializarEstadosAleatorios(int ancho, int alto) {
     // Calcular el grid que usará el kernel de renderizado
@@ -460,25 +507,32 @@ __global__ void kernelCalcularTargets(
         return;
     }
 
+    // Iluminación predicha por el Tail
     Color iluminacion_tail = buffer_prediccion_tail[idx];
     
     // Radiancia total recolectada por el sufijo
     Color radiance_total = reg.luz_acumulada_sufijo + (reg.throughput_sufijo * iluminacion_tail);
     
-    // Denominador: throughput_at_train_vertex * reflectancia_train
-    Color denominador = reg.factor_normalizacion;
-    
-    // Estabilización numérica de la división
-    float safe_eps = 1e-8f; 
+    // throughput_at_train_vertex * reflectancia_train
+    Color normalizacion = reg.factor_normalizacion;
     
     Color target_final;
-    target_final.r = radiance_total.r / fmaxf(denominador.r, safe_eps);
-    target_final.g = radiance_total.g / fmaxf(denominador.g, safe_eps);
-    target_final.b = radiance_total.b / fmaxf(denominador.b, safe_eps);
+    float eps = 1e-4f; 
+    float max_th = fmaxf(normalizacion.r, fmaxf(normalizacion.g, normalizacion.b));
+    if (max_th < eps) {
+        // Si el throughput es extremadamente bajo, la división introducira una varianza enorme
+        target_final = Color(0,0,0);
+    } else {
+        // Normalizar la radiancia total por el throughput para quitar
+        // el peso acumulado de Monte Carlo
+        target_final.r = radiance_total.r / fmaxf(normalizacion.r, eps);
+        target_final.g = radiance_total.g / fmaxf(normalizacion.g, eps);
+        target_final.b = radiance_total.b / fmaxf(normalizacion.b, eps);
+    }
 
     // Clamping del target final
     // Evita que un solo pixel con valor infinito destruya los pesos del HashGrid
-    float max_radiance = 100000.0f;
+    float max_radiance = 1000.0f;
     target_final.r = fminf(target_final.r, max_radiance);
     target_final.g = fminf(target_final.g, max_radiance);
     target_final.b = fminf(target_final.b, max_radiance);
@@ -494,6 +548,7 @@ __global__ void kernelCalcularTargets(
     d.normal = reg.head.normal;
     d.difuso = reg.head.difuso;
     d.especular = reg.head.especular;
+    d.tiempo = reg.head.tiempo;
     d.color = target_final;
 
     buffer_training_final[idx] = d;
@@ -516,6 +571,7 @@ __global__ void kernelPrepararInferenciaTail(
     d.normal = Vector3d(0,0,0);
     d.difuso = Color(0,0,0);
     d.especular = Color(0,0,0);
+    d.tiempo = 0.0f;
     d.color = Color(0,0,0);
 
     if (reg.valido) {
@@ -524,33 +580,10 @@ __global__ void kernelPrepararInferenciaTail(
         d.normal = reg.tail.normal;
         d.difuso = reg.tail.difuso;
         d.especular = reg.tail.especular;
+        d.tiempo = reg.tail.tiempo;
     }
 
     dest_inference_inputs[idx] = d;
-}
-
-// Kernel para desordenar los datos de entrenamiento usando curand
-__global__ void kernelShuffle(
-    const DatosMLP* __restrict__ input_data,
-    DatosMLP* __restrict__ shuffled_data,
-    unsigned int num_elements,
-    curandState* __restrict__ rand_states
-) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= num_elements) return;
-
-    // Obtener estado aleatorio para este thread
-    curandState localState = rand_states[idx];
-    
-    // Generar índice destino aleatorio
-    unsigned int dest_idx = (unsigned int)(curand_uniform(&localState) * num_elements);
-    dest_idx = min(dest_idx, num_elements - 1);
-
-    // Guardar estado actualizado
-    rand_states[idx] = localState;
-
-    // Escribimos el dato en su nueva posición desordenada
-    shuffled_data[dest_idx] = input_data[idx];
 }
 
 int main() {
@@ -576,6 +609,10 @@ int main() {
         cin >> samples_per_pixel;
         cout << "¿Deseas cargar un modelo 3D externo? (1 = Sí, 0 = No): ";
         cin >> cargar_modelo;
+
+        bool activar_transient = false;
+        cout << "¿Activar render transitorio? (1 = Sí, 0 = No): ";
+        cin >> activar_transient;
 
         int num_pixels = ancho_imagen * alto_imagen;
 
@@ -604,11 +641,16 @@ int main() {
                         1.5f, 0.0f, 0.0f, 0.0f, Vector3d(0.0f, 0.0f, -5.6f),
                         Color(0.8f, 0.4f, 0.15f), Color(0.05f, 0.05f, 0.05f), Color(0.0f, 0.0f, 0.0f), Color(0.0f, 0.0f, 0.0f), 1.5f);
             */
-
+            /*
             cargarModelo("../modelos/conejo/scene.gltf", modelo_prims, 
-                        1.0f, 0.0f, -90.0f, 0.0f, Vector3d(0.6f, -3.0f, -4.6f),
+                        0.8f, -90.0f, -90.0f, 0.0f, Vector3d(0.6f, -1.0f, -4.6f),
                         Color(0.8f, 0.4f, 0.15f), Color(0.0f, 0.0f, 0.0f), Color(0.0f, 0.0f, 0.0f), Color(0.0f, 0.0f, 0.0f), 1.5f);
-
+            */
+            // Colocamos el conejo en X=-3.0 (oculto tras el muro), apoyado en el suelo Y=-2.0, cerca de la pared Z=-4.0
+            
+            cargarModelo("../modelos/conejo/scene.gltf", modelo_prims, 
+                    0.8f, -90.0f, -90.0f, 0.0f, Vector3d(-3.3f, -1.0f, -4.0f),
+                    Color(0.8f, 0.4f, 0.15f), Color(0.0f, 0.0f, 0.0f), Color(0.0f, 0.0f, 0.0f), Color(0.0f, 0.0f, 0.0f), 1.5f);
             // Construir BVH para el modelo cargado
             cout << "\n===============================================" << endl;
             cout << "====               ARBOL BVH               ====" << endl;
@@ -619,7 +661,7 @@ int main() {
         
             // Combinar escena base con modelo cargado
             combinarEscenas(&d_primitivas, &num_primitivas, &d_luces, &num_luces);
-            int num_primitivas_malla = modelo_prims.size();
+            num_primitivas_malla = modelo_prims.size();
             cout << "   -Malla: " << num_primitivas_malla << " primitivas" << endl;
         } else {
             // Inicializar escena básica sin modelo
@@ -662,22 +704,33 @@ int main() {
                       (alto_imagen + blockSize.y - 1) / blockSize.y);
 
 
-        /* TRANSIENT RENDERING
+        // TRANSIENT RENDERING
         // Crear TransientRenderer para medir tiempo
         // Escala de nanosegundos
         double t_start = 2.8e-8;
-        double t_final = 9.8e-8;
+        double t_final = 10.0e-8;
+        if(cargar_modelo) {
+            t_start = 6.0e-8;
+            t_final = 11.0e-8;
+        }
         int n_frames = 300;
         double frame_duration = (t_final - t_start) / n_frames;
         double sigma = frame_duration; // Sigma igual a la duración del frame para suavizado
         
-        TransientRender* transientRenderer = new TransientRender(ancho_imagen, alto_imagen, t_start, t_final, n_frames, sigma);
-        */
-        TransientRender* transientRenderer = new TransientRender(1, 2, 1, 2, 1, 1); // Basico para evitar errores si no se usa
+        TransientRender* transientRenderer;
+        if (activar_transient) {
+            transientRenderer = new TransientRender(ancho_imagen, alto_imagen, t_start, t_final, n_frames, sigma);
+            cout << "[Transient] Render transitorio ACTIVADO (" << n_frames << " frames)" << endl;
+        } else {
+            transientRenderer = new TransientRender(1, 2, 1, 2, 1, 1); // Básico para evitar errores
+            cout << "[Transient] Render transitorio DESACTIVADO" << endl;
+        }
         
         SceneBounds scene_bounds;
         scene_bounds.min = Vector3d(-6.0f, -4.0f, -10.0f);
         scene_bounds.max = Vector3d( 6.0f,  6.0f,  2.0f);
+        scene_bounds.t_min = 0.0f;
+        scene_bounds.t_max = t_final * 1.5f;
 
         tcnn::json config_ganadora;
         //config_ganadora = ejecutarGridSearch(ancho_imagen, alto_imagen, d_camara, *transientRenderer, 
@@ -699,19 +752,22 @@ int main() {
         // Buffers para nferencia
         DatosMLP* d_buffer_inference_inputs; 
         cudaMalloc(&d_buffer_inference_inputs, num_pixels * sizeof(DatosMLP));
-        Color* d_buffer_radiance_predicha; cudaMalloc(&d_buffer_radiance_predicha, num_pixels * sizeof(Color));
-        Color* d_buffer_throughput; cudaMalloc(&d_buffer_throughput, num_pixels * sizeof(Color));
+        Color* d_buffer_radiance_predicha; 
+        cudaMalloc(&d_buffer_radiance_predicha, num_pixels * sizeof(Color));
+        Color* d_buffer_throughput; 
+        cudaMalloc(&d_buffer_throughput, num_pixels * sizeof(Color));
 
         // Buffers para bootstrapping (Entrenamiento)
-        RegistroEntrenamiento* d_buffer_registros_raw; cudaMalloc(&d_buffer_registros_raw, num_pixels * sizeof(RegistroEntrenamiento));
-        DatosMLP* d_buffer_train_final; cudaMalloc(&d_buffer_train_final, num_pixels * sizeof(DatosMLP));
+        RegistroEntrenamiento* d_buffer_registros_raw; 
+        cudaMalloc(&d_buffer_registros_raw, num_pixels * sizeof(RegistroEntrenamiento));
+        DatosMLP* d_buffer_train_final; 
+        cudaMalloc(&d_buffer_train_final, num_pixels * sizeof(DatosMLP));
         
         // Buffer separado para la inferencia de los tails para evitar colisiones
-        DatosMLP* d_buffer_tail_inputs; cudaMalloc(&d_buffer_tail_inputs, num_pixels * sizeof(DatosMLP));
-        Color* d_buffer_tail_predicha; cudaMalloc(&d_buffer_tail_predicha, num_pixels * sizeof(Color));
-
-        DatosMLP* d_buffer_train_shuffled; 
-        cudaMalloc(&d_buffer_train_shuffled, num_pixels * sizeof(DatosMLP));
+        DatosMLP* d_buffer_tail_inputs; 
+        cudaMalloc(&d_buffer_tail_inputs, num_pixels * sizeof(DatosMLP));
+        Color* d_buffer_tail_predicha; 
+        cudaMalloc(&d_buffer_tail_predicha, num_pixels * sizeof(Color));
 
         unsigned int* d_mlp_counter = nullptr;
         cudaMalloc(&d_mlp_counter, sizeof(unsigned int));
@@ -721,19 +777,19 @@ int main() {
         vector<Color> frame_cpu(ancho_imagen * alto_imagen);
 
         // Parámetros de la red
-        uint32_t n_in = 15;
+        uint32_t n_in = 16;
         uint32_t n_out = 3;
-        uint32_t batch_size_mlp = 16384;
+        uint32_t batch_size_mlp = 65536;
 
         auto mlp = std::make_unique<ColorMLP>(n_in, n_out, batch_size_mlp, config_ganadora);
-        mlp->setBounds(scene_bounds.min, scene_bounds.max);
-        ofstream loss_file("loss_log.txt");
+        mlp->setBounds(scene_bounds.min, scene_bounds.max, scene_bounds.t_min, scene_bounds.t_max);
         cout << "[MLP] Red inicializada." << endl;
+        ofstream loss_file("loss_log.txt");
 
         // Inicializar visualizador
         Visualizador ventana(ancho_imagen, alto_imagen, "Renderizado en Tiempo Real - NRC");
 
-        int WARMUP_SAMPLES = 48;
+        int WARMUP_SAMPLES = 1000;
         
         int frames_acumulados_reales = 0;
 
@@ -754,12 +810,20 @@ int main() {
                 imagen, *transientRenderer, rand_states,
                 nullptr, d_buffer_registros_raw, d_mlp_counter, num_pixels,
                 d_buffer_inference_inputs, d_buffer_throughput, 
-                !es_warmup, true
+                !es_warmup, true, s
             );
 
             // Inferencia para imagen final
             mlp->inference(d_buffer_inference_inputs, d_buffer_radiance_predicha, num_pixels);
             kernelComposite<<<gridSize, blockSize>>>(d_imagen_data, d_buffer_radiance_predicha, d_buffer_throughput, ancho_imagen, alto_imagen);
+
+            // Si está activo el transient, depositar también la contribución NRC en los bins temporales
+            if (activar_transient && !es_warmup) {
+                kernelTransientComposite<<<gridSize, blockSize>>>(
+                    d_buffer_inference_inputs, d_buffer_radiance_predicha, d_buffer_throughput,
+                    *transientRenderer, ancho_imagen, alto_imagen
+                );
+            }
 
             // ===================== Entrenamiento (BOOTSTRAPPING) =========================
             unsigned int n_train_host = 0; // Variable para almacenar el número de datos válidos para entrenamiento
@@ -770,8 +834,6 @@ int main() {
 
             // Ajustar para que sea perfectamente divisible en 4 batches
             n_train_host = (n_train_host / 4) * 4; 
-            int s_batches = 4; // Número de batches para dividir los datos de entrenamiento
-            int l_records_per_batch = n_train_host / s_batches; // Datos por batch
 
             if (n_train_host > 1024) {
                 int threads = 256;
@@ -784,32 +846,25 @@ int main() {
                 // Calcular Targets Finales (Sufijo + Predicción)
                 kernelCalcularTargets<<<blocks, threads>>>(d_buffer_registros_raw, d_buffer_tail_predicha, d_buffer_train_final, n_train_host);
                 
-                // Shuffle con curand
-                kernelShuffle<<<blocks, threads>>>(
-                    d_buffer_train_final, 
-                    d_buffer_train_shuffled, 
-                    n_train_host,
-                    rand_states
-                );
-                cudaDeviceSynchronize(); // Asegurar que el shuffle termine antes de entrenar
+                cudaDeviceSynchronize();
+
+                float loss = mlp->train_step(d_buffer_train_final, n_train_host);
                 
-                // Distribuir sobre los 's' batches de 'l' datos cada uno
-                for(int k = 0; k < s_batches; k++) {
-                    // Desplazamos el puntero para coger un trozo distinto del array mezclado
-                    DatosMLP* batch_ptr = d_buffer_train_shuffled + (k * l_records_per_batch);
-                    
-                    float loss = mlp->train_step(batch_ptr, l_records_per_batch);
-                    
-                    // Guardar loss
-                    if (k == 0) loss_file << loss << endl; 
-                }    
+                // Guardar loss
+                loss_file << loss << endl; 
+                 
             }
             // ==============================================================================
 
             // Acumulación
             if (!es_warmup) {
                 // Al terminar el warmup, reseteamos el acumulador para eliminar el ruido inicial
-                if (s == WARMUP_SAMPLES) fill(acumulador_cpu.begin(), acumulador_cpu.end(), Color(0,0,0));
+                if (s == WARMUP_SAMPLES) {
+                    fill(acumulador_cpu.begin(), acumulador_cpu.end(), Color(0,0,0));
+                    if (activar_transient && transientRenderer) {
+                        transientRenderer->limpiarAcumulado();
+                    }
+                }
                 
                 frames_acumulados_reales++;
                 cudaMemcpy(frame_cpu.data(), d_imagen_data, num_pixels * sizeof(Color), cudaMemcpyDeviceToHost);
@@ -832,34 +887,40 @@ int main() {
         cout << "=================================================" << endl;
         cout << "Tiempo de renderizado GPU: " << duracion.count() << " ms" << endl;
         loss_file.close();
-        mlp->save_model("mlp_model.json");
+        //mlp->save_model("mlp_model.json");
 
         cout << "\n==============================================" << endl;
         cout << "====         GUARDANDO RESULTADOS         ====" << endl;
         cout << "==============================================" << endl;
 
         // TRANSIENT 
-        /*
-        for (int i = 0; i < transientRenderer->num_frames; ++i) {
-            // Traer datos de GPU a CPU de forma segura
-            vector<Color> buffer_host = transientRenderer->obtenerFrameHost(i);
-            
-            // Crear una imagen temporal en CPU para guardar
-            Imagen img_temp(ancho_imagen, alto_imagen);
-            // Copiar datos del vector al formato que use tu clase Imagen
-            for(int k=0; k<ancho_imagen*alto_imagen; k++) {
-                // Normalizar por el número de muestras
-                Color c = buffer_host[k] / samples_per_pixel;
-                img_temp.datos[k] = c;
+        if (activar_transient) {
+            for (int i = 0; i < transientRenderer->num_frames; ++i) {
+                // Traer datos de GPU a CPU de forma segura
+                vector<Color> buffer_host = transientRenderer->obtenerFrameHost(i);
+                
+                // Crear una imagen temporal en CPU para guardar
+                Imagen img_temp(ancho_imagen, alto_imagen);
+                // Copiar datos del vector al formato que use tu clase Imagen
+                for(int k=0; k<ancho_imagen*alto_imagen; k++) {
+                    // Normalizar por el número de muestras
+                    Color c = buffer_host[k] / samples_per_pixel;
+                    img_temp.datos[k] = c;
+                }
+                
+                // Quitar extensión del nombre si la tiene
+                string base_nombre = nombre_archivo;
+                size_t pos_ext = base_nombre.rfind('.');
+                if (pos_ext != string::npos) base_nombre = base_nombre.substr(0, pos_ext);
+                string nombre = "../transient/" + base_nombre + "_" + to_string(i) + ".png";
+                Imagen res = img_temp.gamma();
+                res = res*1.5f;
+                guardarPNG(res, nombre.c_str());
             }
-            
-            string nombre = "transient/" + nombre_archivo + "_" + to_string(i) + ".png";
-            Imagen res = img_temp.gamma();
-            res = res*1.5f;
-            guardarPNG(res, nombre.c_str());
+            cout << "Imágenes transient guardadas en carpeta 'transient/'" << endl;
+        } else {
+            cout << "Render transitorio desactivado, no se guardan frames transient." << endl;
         }
-        cout << "Imágenes transient guardadas en carpeta 'transient/'" << endl;
-        */
 
         // Copiar datos de GPU a la imagen
         Imagen imagenCPU(ancho_imagen, alto_imagen);
@@ -879,6 +940,20 @@ int main() {
             return 1;
         }
 
+        if (activar_transient) {
+            std::ofstream outFile("transient_volume.bin", std::ios::binary);
+            for (int i = 0; i < transientRenderer->num_frames; ++i) {
+                vector<Color> buffer_host = transientRenderer->obtenerFrameHost(i);
+                for(int k=0; k < ancho_imagen * alto_imagen; k++) {
+                    // Guardar la intensidad
+                    float luminancia = (buffer_host[k].r + buffer_host[k].g + buffer_host[k].b) / 3.0f;
+                    outFile.write(reinterpret_cast<const char*>(&luminancia), sizeof(float));
+                }
+            }
+            outFile.close();
+            cout << "Volumen binario guardado para Python." << endl;
+        }
+
         // Limpiar recursos GPU
         cudaFree(d_imagen_data);
         cudaFree(d_camara);
@@ -890,7 +965,6 @@ int main() {
         cudaFree(d_buffer_train_final);
         cudaFree(d_buffer_tail_inputs);
         cudaFree(d_buffer_tail_predicha);
-        cudaFree(d_buffer_train_shuffled);
         limpiarGPU(d_primitivas, d_luces, rand_states);
 
         // Limpiar transient renderer

@@ -47,30 +47,33 @@ __global__ void prepararDatosEntrenamiento(const DatosMLP* __restrict__ buffer,
     
     int base_in = idx * n_in;
 
-    // Posicion (3 dims)
+    // Posicion (3 dims) - HashGrid
     input_matrix[base_in + 0] = normalize_coord(d.posicion.x, bounds.min.x, bounds.max.x);
     input_matrix[base_in + 1] = normalize_coord(d.posicion.y, bounds.min.y, bounds.max.y);
     input_matrix[base_in + 2] = normalize_coord(d.posicion.z, bounds.min.z, bounds.max.z);
     
-    // Direccion (3 dims)
-    input_matrix[base_in + 3] = d.direccion.x;
-    input_matrix[base_in + 4] = d.direccion.y;
-    input_matrix[base_in + 5] = d.direccion.z;
+    // Tiempo (1 dim) - HashGrid (junto con posición)
+    input_matrix[base_in + 3] = normalize_coord(d.tiempo, bounds.t_min, bounds.t_max);
 
+    // Direccion (3 dims) - OneBlob
+    input_matrix[base_in + 4] = d.direccion.x;
+    input_matrix[base_in + 5] = d.direccion.y;
+    input_matrix[base_in + 6] = d.direccion.z;
 
-    // Normal (3 dims)
-    input_matrix[base_in + 6] = d.normal.x;
-    input_matrix[base_in + 7] = d.normal.y;
-    input_matrix[base_in + 8] = d.normal.z;
+    // Normal (3 dims) - OneBlob
+    input_matrix[base_in + 7] = d.normal.x;
+    input_matrix[base_in + 8] = d.normal.y;
+    input_matrix[base_in + 9] = d.normal.z;
 
-    // Albedos (6 dims)
-    input_matrix[base_in + 9] = d.difuso.r;
-    input_matrix[base_in + 10] = d.difuso.g;
-    input_matrix[base_in + 11] = d.difuso.b;
+    // Difuso (3 dims) - Identity
+    input_matrix[base_in + 10] = d.difuso.r;
+    input_matrix[base_in + 11] = d.difuso.g;
+    input_matrix[base_in + 12] = d.difuso.b;
 
-    input_matrix[base_in + 12] = d.especular.r;
-    input_matrix[base_in + 13] = d.especular.g;
-    input_matrix[base_in + 14] = d.especular.b;
+    // Especular (3 dims) - Identity
+    input_matrix[base_in + 13] = d.especular.r;
+    input_matrix[base_in + 14] = d.especular.g;
+    input_matrix[base_in + 15] = d.especular.b;
 
     // Target (3 dims)
     int base_out = idx * n_out;
@@ -79,7 +82,7 @@ __global__ void prepararDatosEntrenamiento(const DatosMLP* __restrict__ buffer,
     float g = d.color.g;
     float b = d.color.b;
 
-    float max_val = 100000.0f; 
+    float max_val = 1000.0f; 
     if (r > max_val) r = max_val;
     if (g > max_val) g = max_val;
     if (b > max_val) b = max_val;
@@ -97,31 +100,33 @@ __global__ void prepararDatosInferencia(const DatosMLP* datos, uint32_t n_elemen
     
     int base = idx * n_in;
 
-    // Posición (3 dims)
+    // Posición (3 dims) - HashGrid
     buffer_in[base + 0] = normalize_coord(d.posicion.x, bounds.min.x, bounds.max.x);
     buffer_in[base + 1] = normalize_coord(d.posicion.y, bounds.min.y, bounds.max.y);
     buffer_in[base + 2] = normalize_coord(d.posicion.z, bounds.min.z, bounds.max.z);
 
-    // Direccion (3 dims)
-    buffer_in[base + 3] = d.direccion.x;
-    buffer_in[base + 4] = d.direccion.y;
-    buffer_in[base + 5] = d.direccion.z;
+    // Tiempo (1 dim) - HashGrid (junto con posición)
+    buffer_in[base + 3] = normalize_coord(d.tiempo, bounds.t_min, bounds.t_max);
 
-    // Normal (3 dims)
-    buffer_in[base + 6] = d.normal.x;
-    buffer_in[base + 7] = d.normal.y;
-    buffer_in[base + 8] = d.normal.z;
+    // Direccion (3 dims) - OneBlob
+    buffer_in[base + 4] = d.direccion.x;
+    buffer_in[base + 5] = d.direccion.y;
+    buffer_in[base + 6] = d.direccion.z;
 
+    // Normal (3 dims) - OneBlob
+    buffer_in[base + 7] = d.normal.x;
+    buffer_in[base + 8] = d.normal.y;
+    buffer_in[base + 9] = d.normal.z;
 
-    // Difuso (3 dims)
-    buffer_in[base + 9]  = d.difuso.r;
-    buffer_in[base + 10] = d.difuso.g;
-    buffer_in[base + 11] = d.difuso.b;
+    // Difuso (3 dims) - Identity
+    buffer_in[base + 10] = d.difuso.r;
+    buffer_in[base + 11] = d.difuso.g;
+    buffer_in[base + 12] = d.difuso.b;
 
-    // Especular (3 dims)
-    buffer_in[base + 12] = d.especular.r;
-    buffer_in[base + 13] = d.especular.g;
-    buffer_in[base + 14] = d.especular.b;
+    // Especular (3 dims) - Identity
+    buffer_in[base + 13] = d.especular.r;
+    buffer_in[base + 14] = d.especular.g;
+    buffer_in[base + 15] = d.especular.b;
 } 
 
 __global__ void guardarSalidaInferencia(float* network_output, Color* buffer_color, int n_elements) {
@@ -145,13 +150,19 @@ __global__ void guardarSalidaInferencia(float* network_output, Color* buffer_col
     if (isnan(b)) b = 0.0f;
 
     // Evitar Infinitos
-    float max_val = 100000.0f;
+    float max_val = 1000.0f;
     if (r > max_val) r = max_val; 
     if (g > max_val) g = max_val;
     if (b > max_val) b = max_val;
     if (isinf(r)) r = max_val;
     if (isinf(g)) g = max_val;
     if (isinf(b)) b = max_val;
+
+    float umbral_ruido = 0.05f; 
+    
+    if (r < umbral_ruido) r = 0.0f;
+    if (g < umbral_ruido) g = 0.0f;
+    if (b < umbral_ruido) b = 0.0f;
 
     buffer_color[idx] = Color(r, g, b);
 }
@@ -172,14 +183,21 @@ ColorMLP::ColorMLP(uint32_t n_in, uint32_t n_out, uint32_t batch, tcnn::json con
                     //    {"n_frequencies", 12}
                     //},
                     {
-                        {"n_dims_to_encode", 3}, // Posición (3 dims)
+                        {"n_dims_to_encode", 3 /*4*/}, // Posición (3 dims) //+ Tiempo (1 dim) = 4 dims
                         {"otype", "HashGrid"},
                         {"n_levels", 16},
                         {"n_features_per_level", 2},
-                        {"log2_hashmap_size", 19},
+                        {"log2_hashmap_size", 19},//23
                         {"base_resolution", 16},
                         {"per_level_scale", 1.5}
                     },
+                    
+                    {
+                        {"otype", "Frequency"},
+                        {"n_dims_to_encode", 1}, // Tiempo (1 dim)
+                        {"n_frequencies", 10}
+                    },
+                    
                     {
                         {"n_dims_to_encode", 6}, // Dirección (3) + Normal (3) = 6 dims
                         {"otype", "OneBlob"},
@@ -199,15 +217,15 @@ ColorMLP::ColorMLP(uint32_t n_in, uint32_t n_out, uint32_t batch, tcnn::json con
                 {"n_hidden_layers", 5}
             }},
             {"loss", {
-                {"otype", "RelativeL2Luminance"}
+                {"otype", "SMAPE"}
             }},
             {"optimizer", {
                 {"otype", "EMA"},
-                {"decay", 0.99},  // EMA decay
+                {"decay", 0.999},  // EMA decay
                 {"full_precision", true},
                 {"nested", {
                     {"otype", "Adam"},
-                    {"learning_rate", 1e-2}
+                    {"learning_rate", 1e-3}
                 }}
             }}
         };
@@ -230,9 +248,11 @@ ColorMLP::~ColorMLP() {
 }
 
 // Método para actualizar los límites desde el main
-void ColorMLP::setBounds(const Vector3d& min, const Vector3d& max) {
+void ColorMLP::setBounds(const Vector3d& min, const Vector3d& max, float t_min, float t_max) {
     this->bounds.min = min;
     this->bounds.max = max;
+    this->bounds.t_min = t_min;
+    this->bounds.t_max = t_max;
 }
 
 float ColorMLP::train_step(DatosMLP* buffer_samples_gpu, uint32_t n_total_samples_disponibles) {
@@ -278,7 +298,7 @@ void ColorMLP::inference(DatosMLP* buffer_samples_gpu, Color* output_gpu, uint32
     uint32_t n_samples_padded = ((n_samples + BATCH_GRANULARITY - 1) / BATCH_GRANULARITY) * BATCH_GRANULARITY;
 
     // Redimensionar buffers
-    // n_input_dims debe ser 15
+    // n_input_dims debe ser 16
     if (inference_inputs.cols() != n_samples_padded) {
         inference_inputs.resize(n_input_dims, n_samples_padded);
     }

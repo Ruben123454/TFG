@@ -17,7 +17,9 @@ struct DatosMLP {
     Vector3d normal;    // Normal en el punto de intersección
     Color difuso;
     Color especular;
-    
+    float tiempo;       // Tiempo acumulado del camino (para transient rendering)
+
+    float delta_t; // Tiempo acumulado cámara->head (para reconstruir T_total = tiempo + delta_t)
 
     // Output
     Color color;    // Color resultante del path tracing
@@ -27,6 +29,8 @@ struct DatosMLP {
 struct SceneBounds {
     Vector3d min;
     Vector3d max;
+    float t_min;  // Tiempo mínimo (transient rendering)
+    float t_max;  // Tiempo máximo (transient rendering)
 };
 
 // Datos que necesitamos para consultar a la red (Input)
@@ -36,6 +40,7 @@ struct DatosGeometricos {
     Vector3d normal;
     Color difuso;
     Color especular;
+    float tiempo;  // Tiempo acumulado del camino
 };
 
 // Estructura completa para el buffer de entrenamiento
