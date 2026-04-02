@@ -42,11 +42,11 @@
 #include "vector3d.h"
 #include "cargarModelo.h"
 #include "bvh.h"
-#include "transient.h"
 #include "mlp.h"
 #include "mlp_types.h"
 #include "gridsearch.h"
 #include "visualizador.h"
+#include "tinybvh_wrapper.h"
 
 using namespace std;
 
@@ -55,7 +55,6 @@ __global__ void kernelRender(const Camara* camara, const Primitiva* primitivas, 
                             const Primitiva* primitivas_malla, int num_primitivas_malla, int ancho_img, int alto_img, int samples_per_pixel, 
                             const NodoBVH* nodos_bvh, const Primitiva* primitivas_bvh, int num_nodos_bvh, 
                             ImagenGPU imagen_directa,
-                            TransientRender transientRenderer, 
                             curandState* rand_states, 
                             // Datos para ENTRENAMIENTO
                             unsigned int* dev_counter, RegistroEntrenamiento* buffer_registros, unsigned int* counter_train, int max_cap_train,
@@ -69,9 +68,34 @@ __global__ void kernelRender(const Camara* camara, const Primitiva* primitivas, 
         Escenario escena(const_cast<Primitiva*>(primitivas), num_primitivas, const_cast<LuzPuntual*>(luces), num_luces,
                         const_cast<Primitiva*>(primitivas_malla), num_primitivas_malla, nodos_bvh, primitivas_bvh, num_nodos_bvh);
         Render renderer(0.9, samples_per_pixel);
-        
+                    
         renderer.renderizar(*camara, escena, ancho_img, alto_img, x, y, 
-                            imagen_directa, transientRenderer, rand_states, 
+                            imagen_directa, rand_states, 
+                            dev_counter, buffer_registros, counter_train, max_cap_train,
+                            buffer_inference, buffer_throughput, usar_red_inferencia, entrenar_red);
+    }
+}
+
+__global__ void kernelRender_tiny(const Camara* camara, const Primitiva* primitivas, int num_primitivas, const LuzPuntual* luces, int num_luces,
+                            const Primitiva* primitivas_malla, int num_primitivas_malla, int ancho_img, int alto_img, int samples_per_pixel, 
+                            TinyBVHD_GPU nodos_bvh, const Primitiva* primitivas_bvh, int num_nodos_bvh, 
+                            ImagenGPU imagen_directa,
+                            curandState* rand_states, 
+                            // Datos para ENTRENAMIENTO
+                            unsigned int* dev_counter, RegistroEntrenamiento* buffer_registros, unsigned int* counter_train, int max_cap_train,
+                            // Datos para INFERENCIA
+                            DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red) { 
+
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if(x < ancho_img && y < alto_img) {
+        Escenario escena(const_cast<Primitiva*>(primitivas), num_primitivas, const_cast<LuzPuntual*>(luces), num_luces,
+                        const_cast<Primitiva*>(primitivas_malla), num_primitivas_malla, nodos_bvh, primitivas_bvh, num_nodos_bvh);
+        Render renderer(0.9, samples_per_pixel);
+                    
+        renderer.renderizar(*camara, escena, ancho_img, alto_img, x, y, 
+                            imagen_directa, rand_states, 
                             dev_counter, buffer_registros, counter_train, max_cap_train,
                             buffer_inference, buffer_throughput, usar_red_inferencia, entrenar_red);
     }
@@ -119,73 +143,84 @@ void combinarEscenas(Primitiva** d_primitivas, int* num_primitivas, LuzPuntual**
     vector<Primitiva> host_primitivas;
     vector<LuzPuntual> host_luces;
 
-    /*
-    LuzPuntual luz_techo = {};
-    luz_techo.posicion = Vector3d(0, 2.8, -4.0);
-    luz_techo.intensidad = Color(100, 100, 100);
-    host_luces.push_back(luz_techo);
-    */
-
-    // Pared izquierda (roja)
-    Primitiva pared_izq = {};
-    pared_izq.tipo = PLANO;
-    pared_izq.plano.normal = Vector3d(1, 0, 0);
-    pared_izq.plano.distancia = -3.0f;
-    pared_izq.emision = Color(0,0,0);
-    pared_izq.difuso = Color(0.65f, 0.05f, 0.05f);
-    pared_izq.especular = Color(0,0,0);
-    pared_izq.transmision = Color(0,0,0);
-    pared_izq.indice_refraccion = 1.0f;
-    host_primitivas.push_back(pared_izq);
     
-    // Pared derecha (verde)
+    LuzPuntual luz_techo = {};
+    luz_techo.posicion = Vector3d(0, -0.23, -2.0);
+    luz_techo.intensidad = Color(70, 70, 70);
+    host_luces.push_back(luz_techo);
+
+    // Pared derecha (verde) - MÁS SEPARADA
     Primitiva pared_der = {};
     pared_der.tipo = PLANO;
     pared_der.plano.normal = Vector3d(-1, 0, 0);
-    pared_der.plano.distancia = -3.0f;
+    pared_der.plano.distancia = -4.0f;  // Más separada
     pared_der.emision = Color(0,0,0);
-    pared_der.difuso = Color(0.12f, 0.45f, 0.15f);
+    pared_der.difuso = Color(0.8,0.4,0.1);
     pared_der.especular = Color(0,0,0);
     pared_der.transmision = Color(0,0,0);
     pared_der.indice_refraccion = 1.0f;
     host_primitivas.push_back(pared_der);
-    
-    // Suelo (gris)
-    Primitiva suelo = {};
-    suelo.tipo = PLANO;
-    suelo.plano.normal = Vector3d(0, 1, 0);
-    suelo.plano.distancia = -3.0f;
-    suelo.emision = Color(0,0,0);
-    suelo.difuso = Color(0.73f, 0.73f, 0.73f);
-    suelo.especular = Color(0,0,0);
-    suelo.transmision = Color(0,0,0);
-    suelo.indice_refraccion = 1.0f;
-    host_primitivas.push_back(suelo);
-    
-    // Techo (gris)
+
+    // Techo (gris claro)
     Primitiva techo = {};
     techo.tipo = PLANO;
-    techo.plano.normal = Vector3d(0, -1, 0);
+    techo.plano.normal = Vector3d(0, -0.25, 0);
     techo.plano.distancia = -3.0f;
-    //techo.emision = Color(0.0f, 0.0f, 0.0f);
-    techo.emision = Color(5,5,5);
-    techo.difuso = Color(0.73f, 0.73f, 0.73f);
+    //techo.emision = Color(5.0f, 5.0f, 5.0f);
+    techo.emision = Color(0,0,0);
+    techo.difuso = Color(0.9,0.9,0.9);
     techo.especular = Color(0,0,0);
     techo.transmision = Color(0,0,0);
     techo.indice_refraccion = 1.0f;
     host_primitivas.push_back(techo);
-    
-    // Pared fondo (gris)
+
+    // Pared fondo (gris) - MÁS ATRÁS
     Primitiva pared_fondo = {};
     pared_fondo.tipo = PLANO;
     pared_fondo.plano.normal = Vector3d(0, 0, 1);
-    pared_fondo.plano.distancia = -8.0f;
+    pared_fondo.plano.distancia = -10.0f;
     pared_fondo.emision = Color(0,0,0);
-    pared_fondo.difuso = Color(0.73f, 0.73f, 0.73f);
+    pared_fondo.difuso = Color(0.9,0.9,0.9);
     pared_fondo.especular = Color(0,0,0);
     pared_fondo.transmision = Color(0,0,0);
     pared_fondo.indice_refraccion = 1.0f;
     host_primitivas.push_back(pared_fondo);
+
+    // Esfera golpeando pared izquierda
+    Primitiva esfera_izq = {};
+    esfera_izq.tipo = ESFERA;
+    esfera_izq.esfera.centro = Vector3d(-4.0f, -1.1f, -5.2f);
+    esfera_izq.esfera.radio = 0.7f;
+    esfera_izq.emision = Color(0,0,0);
+    esfera_izq.difuso = Color(0.1,0.1,0.1);
+    esfera_izq.especular = Color(0.3f, 0.3f, 0.3f);
+    esfera_izq.transmision = Color(0,0,0);
+    esfera_izq.indice_refraccion = 1.0f;
+    host_primitivas.push_back(esfera_izq);
+
+    // Esfera golpeando esfera rota
+    Primitiva esfera_rota = {};
+    esfera_rota.tipo = ESFERA;
+    esfera_rota.esfera.centro = Vector3d(0.8f, -0.5f, -1.8f);
+    esfera_rota.esfera.radio = 0.4f;
+    esfera_rota.emision = Color(0,0,0);
+    esfera_rota.difuso = Color(0.0f, 0.0f, 0.0f);
+    esfera_rota.especular = Color(0.04f, 0.04f, 0.04f);
+    esfera_rota.transmision = Color(0.9f, 0.1f, 0.1f); 
+    esfera_rota.indice_refraccion = 3.0f; 
+    host_primitivas.push_back(esfera_rota);
+
+    // Esfera golpeando busto
+    Primitiva esfera_busto = {};
+    esfera_busto.tipo = ESFERA;
+    esfera_busto.esfera.centro = Vector3d(0.1f, -1.1f, -2.3f);
+    esfera_busto.esfera.radio = 0.15f;
+    esfera_busto.emision = Color(0,0,0);
+    esfera_busto.difuso = Color(0.0f, 0.0f, 0.0f); 
+    esfera_busto.especular = Color(0.04f, 0.04f, 0.04f); 
+    esfera_busto.transmision = Color(0.1f, 0.8f, 0.4f); 
+    esfera_busto.indice_refraccion = 1.5f;
+    host_primitivas.push_back(esfera_busto);
 
    
     // Copiar las primitivas manuales a la GPU
@@ -401,8 +436,16 @@ __global__ void inicializarCamara(Camara* d_camara, int ancho_imagen, int alto_i
         float ancho_plano = alto_plano * (static_cast<float>(ancho_imagen) / alto_imagen);
         
         // Usar el constructor de CamaraGPU
-        Vector3d posicion(0, 0, 5);
-        Vector3d frente(0, 0, -1);
+        //Vector3d posicion(0, 0, 5);
+        //Vector3d frente(0, 0, -1);
+        //Vector3d arriba(0, 1, 0);
+
+        //Vector3d posicion(0, -0.75, 4.25);
+        //Vector3d frente(0, 0, -1);
+        //Vector3d arriba(0, 1, 0);
+
+        Vector3d posicion(2.6f, 0.2f, 4.25f);
+        Vector3d frente(-0.6f, -0.25f, -1.0f);
         Vector3d arriba(0, 1, 0);
 
         *d_camara = Camara(posicion, frente, arriba, ancho_plano, alto_plano, distancia_focal);
@@ -553,11 +596,157 @@ __global__ void kernelShuffle(
     shuffled_data[dest_idx] = input_data[idx];
 }
 
+bool renderizarModoReconstruccion(
+    int ancho_imagen,
+    int alto_imagen,
+    int samples_per_pixel,
+    const string& nombre_archivo,
+    const string& ruta_modelo,
+    Camara* d_camara,
+    const Primitiva* d_primitivas,
+    int num_primitivas,
+    const LuzPuntual* d_luces,
+    int num_luces,
+    const Primitiva* d_primitivas_malla,
+    int num_primitivas_malla,
+    const TinyBVH& bvh_modelo_tiny,
+    curandState* rand_states,
+    const SceneBounds& scene_bounds
+) {
+    int num_pixels = ancho_imagen * alto_imagen;
+
+    cout << "\n================================================" << endl;
+    cout << "====         MODO RECONSTRUCCIÓN           ====" << endl;
+    cout << "================================================" << endl;
+
+    tcnn::json config_ganadora;
+    uint32_t n_in = 15;
+    uint32_t n_out = 3;
+    uint32_t batch_size_mlp = 16384;
+    auto mlp = std::make_unique<ColorMLP>(n_in, n_out, batch_size_mlp, config_ganadora);
+    mlp->setBounds(scene_bounds.min, scene_bounds.max);
+
+    if (!mlp->load_model(ruta_modelo)) {
+        cerr << "[MLP] No se pudo cargar el modelo neuronal." << endl;
+        return false;
+    }
+
+    Color* d_imagen_data = nullptr;
+    DatosMLP* d_buffer_inference_inputs = nullptr;
+    Color* d_buffer_radiance_predicha = nullptr;
+    Color* d_buffer_throughput = nullptr;
+
+    cudaMalloc(&d_imagen_data, num_pixels * sizeof(Color));
+    cudaMalloc(&d_buffer_inference_inputs, num_pixels * sizeof(DatosMLP));
+    cudaMalloc(&d_buffer_radiance_predicha, num_pixels * sizeof(Color));
+    cudaMalloc(&d_buffer_throughput, num_pixels * sizeof(Color));
+    cudaMemset(d_imagen_data, 0, num_pixels * sizeof(Color));
+
+    ImagenGPU imagen(ancho_imagen, alto_imagen, d_imagen_data);
+    vector<Color> acumulador_cpu(num_pixels, Color(0,0,0));
+    vector<Color> frame_cpu(num_pixels);
+
+    dim3 blockSize(16, 16);
+    dim3 gridSize((ancho_imagen + blockSize.x - 1) / blockSize.x,
+                  (alto_imagen + blockSize.y - 1) / blockSize.y);
+
+    auto inicio = chrono::high_resolution_clock::now();
+    for (int s = 0; s < samples_per_pixel; ++s) {
+        cudaMemset(d_imagen_data, 0, num_pixels * sizeof(Color));
+        cudaMemset(d_buffer_inference_inputs, 0, num_pixels * sizeof(DatosMLP));
+        cudaMemset(d_buffer_throughput, 0, num_pixels * sizeof(Color));
+
+        kernelRender_tiny<<<gridSize, blockSize>>>(
+            d_camara, d_primitivas, num_primitivas, d_luces, num_luces,
+            d_primitivas_malla, num_primitivas_malla, ancho_imagen, alto_imagen, 1,
+            bvh_modelo_tiny.obtenerDatosGPU(), bvh_modelo_tiny.getPrimitivasGPU(), bvh_modelo_tiny.getNumPrimitivas(),
+            imagen, rand_states,
+            nullptr, nullptr, nullptr, 0,
+            d_buffer_inference_inputs, d_buffer_throughput, 
+            true, false
+        );
+
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            cerr << "Error en kernelRender (reconstrucción): " << cudaGetErrorString(err) << endl;
+            cudaFree(d_imagen_data);
+            cudaFree(d_buffer_inference_inputs);
+            cudaFree(d_buffer_radiance_predicha);
+            cudaFree(d_buffer_throughput);
+            return false;
+        }
+
+        err = cudaDeviceSynchronize();
+        if (err != cudaSuccess) {
+            cerr << "Error ejecutando kernelRender (reconstrucción): " << cudaGetErrorString(err) << endl;
+            cudaFree(d_imagen_data);
+            cudaFree(d_buffer_inference_inputs);
+            cudaFree(d_buffer_radiance_predicha);
+            cudaFree(d_buffer_throughput);
+            return false;
+        }
+
+        mlp->inference(d_buffer_inference_inputs, d_buffer_radiance_predicha, num_pixels);
+        kernelComposite<<<gridSize, blockSize>>>(d_imagen_data, d_buffer_radiance_predicha, d_buffer_throughput, ancho_imagen, alto_imagen);
+        cudaDeviceSynchronize();
+
+        cudaMemcpy(frame_cpu.data(), d_imagen_data, num_pixels * sizeof(Color), cudaMemcpyDeviceToHost);
+        for (int i = 0; i < num_pixels; ++i) {
+            acumulador_cpu[i] = acumulador_cpu[i] + frame_cpu[i];
+        }
+
+        cout << "\rSample: " << (s + 1) << "/" << samples_per_pixel << flush;
+    }
+    cout << endl;
+
+    auto fin = chrono::high_resolution_clock::now();
+    auto duracion = chrono::duration_cast<chrono::milliseconds>(fin - inicio);
+
+    cout << "\n=================================================" << endl;
+    cout << "====       RECONSTRUCCIÓN COMPLETADA       ====" << endl;
+    cout << "=================================================" << endl;
+    cout << "Tiempo de renderizado GPU: " << duracion.count() << " ms" << endl;
+
+    Imagen imagenCPU(ancho_imagen, alto_imagen);
+    float inv_samples = 1.0f / (float)samples_per_pixel;
+    for (int i = 0; i < num_pixels; ++i) {
+        imagenCPU.datos[i] = acumulador_cpu[i] * inv_samples;
+    }
+
+    Imagen imagen_final = imagenCPU.filmic();
+    if (guardarPNG(imagen_final, nombre_archivo.c_str())) {
+        cout << "Imagen guardada como: " << nombre_archivo << endl;
+    } else {
+        cout << "Error al guardar la imagen" << endl;
+    }
+
+    cudaFree(d_imagen_data);
+    cudaFree(d_buffer_inference_inputs);
+    cudaFree(d_buffer_radiance_predicha);
+    cudaFree(d_buffer_throughput);
+    return true;
+}
+
 int main() {
     // Habilitar mapeo de memoria host
     cudaSetDeviceFlags(cudaDeviceMapHost);
 
     try {
+        // Selección de modo
+        cout << "================================================" << endl;
+        cout << "====            SELECCIONAR MODO            ====" << endl;
+        cout << "================================================" << endl;
+        cout << "1. Modo normal (entrenamiento + uso)" << endl;
+        cout << "2. Modo reconstruccion (solo inferencia)" << endl;
+        cout << "Selecciona una opcion (1 o 2): ";
+
+        int modo = 1;
+        cin >> modo;
+        if (modo != 1 && modo != 2) {
+            cerr << "Opcion invalida." << endl;
+            return 1;
+        }
+
         // Configuración básica
         cout << "================================================" << endl;
         cout << "====          CONFIGURACIÓN IMAGEN          ====" << endl;
@@ -567,6 +756,7 @@ int main() {
         int alto_imagen;
         int samples_per_pixel;
         bool cargar_modelo = false;
+        string ruta_modelo_entrenado = "mlp_model.json";
 
         cout << "Introduce el ancho de la imagen (px): ";
         cin >> ancho_imagen;
@@ -595,28 +785,87 @@ int main() {
         int num_primitivas_malla = 0;
 
         ArbolBVH bvh_modelo;
+        TinyBVH bvh_modelo_tiny;
 
         if(cargar_modelo) {
             vector<Primitiva> modelo_prims;
+            vector<Primitiva> modelo_prims2;
+            vector<Primitiva> modelo_prims3;
+            vector<Primitiva> modelo_prims4;
+            vector<Primitiva> modelo_prims5;
+            vector<Primitiva> modelo_prims6;
+            vector<Primitiva> modelo_prims7;
+            vector<Primitiva> modelo_prims8;
+            vector<Primitiva> modelo_prims9;
             
             /*
             cargarModelo("../modelos/mono/scene.gltf", modelo_prims, 
                         1.5f, 0.0f, 0.0f, 0.0f, Vector3d(0.0f, 0.0f, -5.6f),
                         Color(0.8f, 0.4f, 0.15f), Color(0.05f, 0.05f, 0.05f), Color(0.0f, 0.0f, 0.0f), Color(0.0f, 0.0f, 0.0f), 1.5f);
             */
-
+            /*
             cargarModelo("../modelos/conejo/scene.gltf", modelo_prims, 
                         1.0f, 0.0f, -90.0f, 0.0f, Vector3d(0.6f, -3.0f, -4.6f),
                         Color(0.8f, 0.4f, 0.15f), Color(0.0f, 0.0f, 0.0f), Color(0.0f, 0.0f, 0.0f), Color(0.0f, 0.0f, 0.0f), 1.5f);
+            */
 
+            // Arriba izquierda
+            cargarModelo("../modelos/concurso/columna2.glb", modelo_prims, 
+                        0.5f, 0.0f, -90.0f, 0.0f, Vector3d(-1.7f, -3.3f, -6.5f),
+                        Color(0.75f, 0.65f, 0.55f), Color(0.01f, 0.01f, 0.01f), Color(0.0f, 0.0f, 0.0f), Color(0.0f, 0.0f, 0.0f), 1.0f);
+                        
+            // Abajo derecha
+            cargarModelo("../modelos/concurso/columna1.glb", modelo_prims2, 
+                        0.5f, 0.0f, -90.0f, 0.0f, Vector3d(1.7f, -3.1f, -2.5f),
+                        Color(0.75f, 0.65f, 0.55f), Color(0.01f, 0.01f, 0.01f), Color(0.0f, 0.0f, 0.0f), Color(0.0f, 0.0f, 0.0f), 1.0f);
+
+            // Arriba derecha
+            cargarModelo("../modelos/concurso/columna3.glb", modelo_prims4,
+                        0.5f, 0.0f, 180.0f, 0.0f, Vector3d(1.7f, -3.4f, -6.5f),
+                        Color(0.75f, 0.65f, 0.55f), Color(0.01f, 0.01f, 0.01f), Color(0.0f, 0.0f, 0.0f), Color(0.0f, 0.0f, 0.0f), 1.0f);
+
+            // Abajo izquierda
+            cargarModelo("../modelos/concurso/columna_suelo.glb", modelo_prims5,
+                        0.5f, 0.0f, -90.0f, 0.0f, Vector3d(-1.7f, -3.1f, -2.5f),
+                        Color(0.75f, 0.65f, 0.55f), Color(0.01f, 0.01f, 0.01f), Color(0.0f, 0.0f, 0.0f), Color(0.0f, 0.0f, 0.0f), 1.0f);
+            
+            cargarModelo("../modelos/concurso/suelo2.glb", modelo_prims6,
+                        0.5f, 0.0f, 0.0f, 0.0f, Vector3d(-4.0f, -4.8f, -5.2f),
+                        Color(0.1,0.2,0.4), Color(0.0f, 0.0f, 0.0f), Color(0.0f, 0.0f, 0.0f), Color(0.0f, 0.0f, 0.0f), 1.0f);
+
+            cargarModelo("../modelos/concurso/suelo_grieta.glb", modelo_prims7,
+                        1.0f, 0.0f, 0.0f, 0.0f, Vector3d(0.0f, -3.3f, -5.2f),
+                        Color(0.73f, 0.73f, 0.73f), Color(0.0f, 0.0f, 0.0f), Color(0.0f, 0.0f, 0.0f), Color(0.0f, 0.0f, 0.0f), 1.0f);
+
+            cargarModelo("../modelos/concurso/esfera_rota.glb", modelo_prims8,
+                        0.5f, 30.0f, 110.0f, 0.0f, Vector3d(1.0f, -2.8f, -2.0f),
+                        Color(0.85f, 0.4f, 0.3f), Color(0.0f, 0.0f, 0.0f), Color(0.0f, 0.0f, 0.0f), Color(0.0f, 0.0f, 0.0f), 1.0f);
+            
+            cargarModelo("../modelos/concurso/cabeza.glb", modelo_prims9,
+                        0.15f, 0.0f, 80.0f, 30.0f, Vector3d(0.0f, -1.4f, -2.3f),
+                        Color(0.73f, 0.73f, 0.73f), Color(0.0f, 0.0f, 0.0f), Color(0.0f, 0.0f, 0.0f), Color(0.0f, 0.0f, 0.0f), 1.0f);
+
+            modelo_prims.insert(modelo_prims.end(), modelo_prims2.begin(), modelo_prims2.end());
+            modelo_prims.insert(modelo_prims.end(), modelo_prims3.begin(), modelo_prims3.end());
+            modelo_prims.insert(modelo_prims.end(), modelo_prims4.begin(), modelo_prims4.end());
+            modelo_prims.insert(modelo_prims.end(), modelo_prims5.begin(), modelo_prims5.end());
+            modelo_prims.insert(modelo_prims.end(), modelo_prims6.begin(), modelo_prims6.end());
+            modelo_prims.insert(modelo_prims.end(), modelo_prims7.begin(), modelo_prims7.end());
+            modelo_prims.insert(modelo_prims.end(), modelo_prims8.begin(), modelo_prims8.end());
+            modelo_prims.insert(modelo_prims.end(), modelo_prims9.begin(), modelo_prims9.end());
+
+            
             // Construir BVH para el modelo cargado
             cout << "\n===============================================" << endl;
             cout << "====               ARBOL BVH               ====" << endl;
             cout << "===============================================" << endl;
             
-            bvh_modelo.construirBVH(modelo_prims);
-            bvh_modelo.obtenerInfo();
-        
+            //bvh_modelo.construirBVH(modelo_prims);
+            //bvh_modelo.obtenerInfo();
+                
+            bvh_modelo_tiny.construirBVH(modelo_prims);
+            bvh_modelo_tiny.obtenerInfo();
+
             // Combinar escena base con modelo cargado
             combinarEscenas(&d_primitivas, &num_primitivas, &d_luces, &num_luces);
             int num_primitivas_malla = modelo_prims.size();
@@ -661,23 +910,27 @@ int main() {
         dim3 gridSize((ancho_imagen + blockSize.x - 1) / blockSize.x, 
                       (alto_imagen + blockSize.y - 1) / blockSize.y);
 
-
-        /* TRANSIENT RENDERING
-        // Crear TransientRenderer para medir tiempo
-        // Escala de nanosegundos
-        double t_start = 2.8e-8;
-        double t_final = 9.8e-8;
-        int n_frames = 300;
-        double frame_duration = (t_final - t_start) / n_frames;
-        double sigma = frame_duration; // Sigma igual a la duración del frame para suavizado
-        
-        TransientRender* transientRenderer = new TransientRender(ancho_imagen, alto_imagen, t_start, t_final, n_frames, sigma);
-        */
-        TransientRender* transientRenderer = new TransientRender(1, 2, 1, 2, 1, 1); // Basico para evitar errores si no se usa
-        
         SceneBounds scene_bounds;
         scene_bounds.min = Vector3d(-6.0f, -4.0f, -10.0f);
         scene_bounds.max = Vector3d( 6.0f,  6.0f,  2.0f);
+
+        if (modo == 2) {
+            bool ok = renderizarModoReconstruccion(
+                ancho_imagen, alto_imagen, samples_per_pixel, nombre_archivo,
+                ruta_modelo_entrenado,
+                d_camara,
+                d_primitivas, num_primitivas,
+                d_luces, num_luces,
+                d_primitivas_malla, num_primitivas_malla,
+                bvh_modelo_tiny,
+                rand_states,
+                scene_bounds
+            );
+
+            cudaFree(d_camara);
+            limpiarGPU(d_primitivas, d_luces, rand_states);
+            return ok ? 0 : 1;
+        }
 
         tcnn::json config_ganadora;
         //config_ganadora = ejecutarGridSearch(ancho_imagen, alto_imagen, d_camara, *transientRenderer, 
@@ -747,15 +1000,29 @@ int main() {
             cudaMemset(d_mlp_counter, 0, sizeof(unsigned int));
             cudaMemset(d_imagen_data, 0, num_pixels * sizeof(Color));
 
+            /*
             kernelRender<<<gridSize, blockSize>>>(
                 d_camara, d_primitivas, num_primitivas, d_luces, num_luces,
                 d_primitivas_malla, num_primitivas_malla, ancho_imagen, alto_imagen, 1,
                 bvh_modelo.getNodosGPU(), bvh_modelo.getPrimitivasGPU(), bvh_modelo.getNumNodos(),
-                imagen, *transientRenderer, rand_states,
+                imagen, rand_states,
                 nullptr, d_buffer_registros_raw, d_mlp_counter, num_pixels,
                 d_buffer_inference_inputs, d_buffer_throughput, 
                 !es_warmup, true
             );
+            */
+            
+            // Escenario con BVH Tiny
+            kernelRender_tiny<<<gridSize, blockSize>>>(
+                d_camara, d_primitivas, num_primitivas, d_luces, num_luces,
+                d_primitivas_malla, num_primitivas_malla, ancho_imagen, alto_imagen, 1,
+                bvh_modelo_tiny.obtenerDatosGPU(), bvh_modelo_tiny.getPrimitivasGPU(), bvh_modelo_tiny.getNumPrimitivas(),
+                imagen, rand_states,
+                nullptr, d_buffer_registros_raw, d_mlp_counter, num_pixels,
+                d_buffer_inference_inputs, d_buffer_throughput, 
+                !es_warmup, true
+            );
+            
 
             // Inferencia para imagen final
             mlp->inference(d_buffer_inference_inputs, d_buffer_radiance_predicha, num_pixels);
@@ -838,29 +1105,6 @@ int main() {
         cout << "====         GUARDANDO RESULTADOS         ====" << endl;
         cout << "==============================================" << endl;
 
-        // TRANSIENT 
-        /*
-        for (int i = 0; i < transientRenderer->num_frames; ++i) {
-            // Traer datos de GPU a CPU de forma segura
-            vector<Color> buffer_host = transientRenderer->obtenerFrameHost(i);
-            
-            // Crear una imagen temporal en CPU para guardar
-            Imagen img_temp(ancho_imagen, alto_imagen);
-            // Copiar datos del vector al formato que use tu clase Imagen
-            for(int k=0; k<ancho_imagen*alto_imagen; k++) {
-                // Normalizar por el número de muestras
-                Color c = buffer_host[k] / samples_per_pixel;
-                img_temp.datos[k] = c;
-            }
-            
-            string nombre = "transient/" + nombre_archivo + "_" + to_string(i) + ".png";
-            Imagen res = img_temp.gamma();
-            res = res*1.5f;
-            guardarPNG(res, nombre.c_str());
-        }
-        cout << "Imágenes transient guardadas en carpeta 'transient/'" << endl;
-        */
-
         // Copiar datos de GPU a la imagen
         Imagen imagenCPU(ancho_imagen, alto_imagen);
         float inv_samples = 1.0f / (float)frames_acumulados_reales;
@@ -892,12 +1136,6 @@ int main() {
         cudaFree(d_buffer_tail_predicha);
         cudaFree(d_buffer_train_shuffled);
         limpiarGPU(d_primitivas, d_luces, rand_states);
-
-        // Limpiar transient renderer
-        if (transientRenderer) {
-            transientRenderer->liberar();
-            delete transientRenderer;
-        }
         
     } catch (const exception& e) {
         cerr << "ERROR: " << e.what() << endl;

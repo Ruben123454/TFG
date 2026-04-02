@@ -335,3 +335,85 @@ void ColorMLP::save_model(const std::string& filename) {
         std::cerr << "[MLP] Excepción al guardar modelo: " << e.what() << std::endl;
     }
 }
+
+bool ColorMLP::load_model(const std::string& filename) {
+    try {
+        // Leer archivo JSON (contiene solo pesos, no configuración)
+        std::ifstream file(filename);
+        if (!file.is_open()) {
+            std::cerr << "[MLP] Error: No se pudo abrir el archivo: " << filename << std::endl;
+            return false;
+        }
+
+        json data;
+        file >> data;
+        file.close();
+        
+        json config = {
+            {"encoding", {
+                {"otype", "Composite"},
+                {"nested", {
+                    //{
+                    //    {"n_dims_to_encode", 3}, // Posición (3 dims)
+                    //    {"otype", "Frequency"},
+                    //    {"n_frequencies", 12}
+                    //},
+                    {
+                        {"n_dims_to_encode", 3}, // Posición (3 dims)
+                        {"otype", "HashGrid"},
+                        {"n_levels", 16},
+                        {"n_features_per_level", 2},
+                        {"log2_hashmap_size", 19},
+                        {"base_resolution", 16},
+                        {"per_level_scale", 1.5}
+                    },
+                    {
+                        {"n_dims_to_encode", 6}, // Dirección (3) + Normal (3) = 6 dims
+                        {"otype", "OneBlob"},
+                        {"n_bins", 4}
+                    },
+                    {
+                        {"n_dims_to_encode", 6}, // Albedos (6 dims) = Difuso (3) + Especular (3)
+                        {"otype", "Identity"}     
+                    }
+                }}
+            }},
+            {"network", {
+                {"otype", "FullyFusedMLP"},
+                {"activation", "ReLU"},
+                {"output_activation", "None"},
+                {"n_neurons", 64},
+                {"n_hidden_layers", 5}
+            }},
+            {"loss", {
+                {"otype", "RelativeL2Luminance"}
+            }},
+            {"optimizer", {
+                {"otype", "EMA"},
+                {"decay", 0.99},  // EMA decay
+                {"full_precision", true},
+                {"nested", {
+                    {"otype", "Adam"},
+                    {"learning_rate", 1e-2}
+                }}
+            }}
+        };
+
+
+        // 3. Crear el modelo usando create_from_config
+        model = create_from_config(n_input_dims, n_output_dims, config);
+
+        // 4. Deserializar los pesos usando el trainer
+        model.trainer->deserialize(data);
+
+        model_loaded = true;
+        std::cout << "[MLP] Modelo cargado exitosamente desde: " << filename << std::endl;
+        std::cout << "[MLP] Parámetros de la red: " << model.network->n_params() << std::endl;
+        
+        return true;
+
+    } catch (const std::exception& e) {
+        std::cerr << "[MLP] Excepción al cargar modelo: " << e.what() << std::endl;
+        return false;
+    }
+}

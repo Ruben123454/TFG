@@ -33,7 +33,6 @@ __global__ void kernelRender(const Camara* camara, const Primitiva* primitivas, 
                             const Primitiva* primitivas_malla, int num_primitivas_malla, int ancho_img, int alto_img, int samples_per_pixel, 
                             const NodoBVH* nodos_bvh, const Primitiva* primitivas_bvh, int num_nodos_bvh, 
                             ImagenGPU imagen_directa,
-                            TransientRender transientRenderer, 
                             curandState* rand_states, 
                             unsigned int* dev_counter, RegistroEntrenamiento* buffer_registros, unsigned int* counter_train, int max_cap_train,
                             DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red);
@@ -71,8 +70,7 @@ struct Hyperparams {
 
 tcnn::json ejecutarGridSearch(
     int ancho, int alto, 
-    const Camara* camara,
-    TransientRender& tr, 
+    const Camara* camara, 
     Primitiva* d_primitivas, int n_prims, LuzPuntual* d_luces, int n_luces,
     Primitiva* d_malla, int n_malla, 
     const NodoBVH* d_nodos, const Primitiva* d_prims_bvh, int n_nodos_bvh,
@@ -214,7 +212,7 @@ tcnn::json ejecutarGridSearch(
                             camara, d_primitivas, n_prims, d_luces, n_luces, 
                             d_malla, n_malla, ancho, alto, 1, 
                             d_nodos, d_prims_bvh, n_nodos_bvh, 
-                            img_gpu, tr, d_rand, 
+                            img_gpu, d_rand, 
                             nullptr, d_registros, d_counter, num_pixels, 
                             d_infer, d_throu, false, true);
                         cudaDeviceSynchronize();

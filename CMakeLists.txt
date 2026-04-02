@@ -60,6 +60,7 @@ add_executable(raytracer
     main.cu
     bvh.cu
     mlp.cu
+    tinybvh_wrapper.cpp
 )
 
 # ----------------------------

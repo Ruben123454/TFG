@@ -30,7 +30,7 @@ public:
     __device__ Render(double rr = 0.9, int spp = 100) : 
                             russian_roulette_prob(rr), samples_per_pixel(spp) {}
 
-    __device__ Color lanzarRayoIterativo(const Rayo& r_inicial, const Escenario& escena, curandState* rand_state, int px, int py, TransientRender& transientRenderer, 
+    __device__ Color lanzarRayoIterativo(const Rayo& r_inicial, const Escenario& escena, curandState* rand_state, int px, int py,
                                     RegistroEntrenamiento& registro_train, bool& guardar_train,
                                     DatosMLP& datos_inf, Color& throughput_inf, bool& necesita_inf, bool es_ruta_entrenamiento, bool usar_red_inferencia) {
     Color color(0, 0, 0);
@@ -70,7 +70,7 @@ public:
         const Primitiva* primitiva_intersectada;
         float u = 0.0f, v = 0.0f;
         
-        if(escena.intersectaPrimitivasBVH(rayo_actual, t_interseccion, &primitiva_intersectada, u, v)) {
+        if(escena.intersectaPrimitivasBVH_tiny(rayo_actual, t_interseccion, &primitiva_intersectada, u, v)) {
             Vector3d punto_interseccion = rayo_actual.origen() + rayo_actual.direccion() * t_interseccion;
             Vector3d normal = escena.calcularNormal(primitiva_intersectada, punto_interseccion, u, v);
 
@@ -119,15 +119,13 @@ public:
                     registro_train.valido = true;
                     guardar_train = true;
                 }
-
-                transientRenderer.agregarMuestra(px, py, tiempo_acumulado, contrib);
                 break;
             }
 
             // NEE (Luz Directa)
             if(es_difuso) {
                 Vector3d punto_sombra = punto_interseccion + normal * EPSILON;
-                Color L_dir = escena.calcularLuzDirecta(punto_sombra, normal, primitiva_intersectada, transientRenderer, 0, 0, 0, camino, current_ior);
+                Color L_dir = escena.calcularLuzDirecta(punto_sombra, normal, primitiva_intersectada, 0, 0, 0, camino, current_ior);
                 Color contrib_nee = camino * L_dir;
                 color = color + contrib_nee;
             }
@@ -416,7 +414,7 @@ public:
 
     // Método de renderizado para GPU
     __device__ void renderizar(const Camara& camara, const Escenario& escena, 
-                              int ancho_img, int alto_img, int x, int y, ImagenGPU& imagen, TransientRender& transientRenderer,
+                              int ancho_img, int alto_img, int x, int y, ImagenGPU& imagen,
                               curandState* rand_states, 
                               // Datos para entrenamiento
                               unsigned int* dev_counter, 
@@ -456,7 +454,7 @@ public:
         // Fase 3 (Frame 80+): entrenar_red=false, usar_red_inferencia=true → 0% entrena, 100% infiere
         bool es_training_pixel = entrenar_red ? (usar_red_inferencia ? (curand_uniform(rand_state) < 0.05f) : true) : false;
 
-        Color color = lanzarRayoIterativo(rayo, escena, rand_state, x, y, transientRenderer, 
+        Color color = lanzarRayoIterativo(rayo, escena, rand_state, x, y, 
                                             reg_train, guardar_train, 
                                             datos_inferencia, throughput_inferencia, necesita_inferencia, es_training_pixel, usar_red_inferencia);
 
