@@ -76,16 +76,16 @@ tcnn::json ejecutarGridSearch(
     cout << "==========================================" << endl;
 
     // Espacio de búsqueda
-    vector<float> lrs = { 1e-2, 1e-3, 5e-3 };
-    vector<int> neurons = { 32, 64 };
-    vector<int> layers = { 3, 4, 5 };
-    vector<int> hash_sizes = { 16, 18, 19 }; 
-    vector<int> dir_bins = { 4, 8 };
+    vector<float> lrs = { 1e-3, 5e-4, 1e-4 };
+    vector<int> neurons = { 64, 128 };
+    vector<int> layers = { 4, 5 };
+    vector<int> hash_sizes = { 18, 19 }; 
+    vector<int> time_freqs = { 8, 12, 16 };
     
     // Parámetros de optimizador
-    vector<float> ema_decays = { 0.95, 0.99, 0.999 };
+    vector<float> ema_decays = { 0.99f, 0.999f };
 
-    int total_comb = lrs.size() * neurons.size() * layers.size() * hash_sizes.size() * dir_bins.size()
+    int total_comb = lrs.size() * neurons.size() * layers.size() * hash_sizes.size() * time_freqs.size()
                    * ema_decays.size();
     int current_comb = 0;
     int skipped_oom = 0;
@@ -123,7 +123,7 @@ tcnn::json ejecutarGridSearch(
       for (int n : neurons) {
         for (int l : layers) {
           for (int h : hash_sizes) {
-            for (int bins : dir_bins) {
+            for (int time_freq : time_freqs) {
               for (float ema_d : ema_decays) {
                 current_comb++;
                 
@@ -137,7 +137,7 @@ tcnn::json ejecutarGridSearch(
                 
                 cout << "[" << current_comb << "/" << total_comb << "] "
                      << "LR:" << lr << " N:" << n << "x" << l 
-                     << " H:2^" << h << " B:" << bins 
+                     << " H:2^" << h << " T:" << time_freq 
                      << " EMA:" << ema_d << " -> " << flush;
                 
                 if (estimated_mem > free_mem * 0.9) {
@@ -151,19 +151,24 @@ tcnn::json ejecutarGridSearch(
                         {"encoding", {
                             {"otype", "Composite"},
                             {"nested", {
-                                {
-                                    {"n_dims_to_encode", 4}, // Posición (3) + Tiempo (1)
+                                { 
+                                    {"n_dims_to_encode", 3}, // Posición (3)
                                     {"otype", "HashGrid"},
                                     {"n_levels", 16},
                                     {"n_features_per_level", 2},
-                                    {"log2_hashmap_size", h},
+                                    {"log2_hashmap_size", best_params.hashmap_size},
                                     {"base_resolution", 16},
                                     {"per_level_scale", 1.5f}
                                 },
                                 {
+                                    {"otype", "Frequency"},
+                                    {"n_dims_to_encode", 1}, // Tiempo (1 dim)
+                                    {"n_frequencies", time_freq}
+                                },
+                                {
                                     {"n_dims_to_encode", 6}, // Dirección (3) + Normal (3)
                                     {"otype", "OneBlob"},
-                                    {"n_bins", bins}
+                                    {"n_bins", 4}
                                 },
                                 {
                                     {"n_dims_to_encode", 6}, // Difuso (3) + Especular (3)
@@ -242,7 +247,7 @@ tcnn::json ejecutarGridSearch(
                     
                     if (avg_loss < best_loss && avg_loss > 1e-7f) { 
                         best_loss = avg_loss;
-                        best_params = {lr, n, l, h, bins, ema_d, avg_loss};
+                        best_params = {lr, n, l, h, time_freq, ema_d, avg_loss};
                     }
                     
                     mlp.reset();
@@ -287,7 +292,7 @@ tcnn::json ejecutarGridSearch(
     cout << "   Neuronas:         " << best_params.n_neurons << endl;
     cout << "   Capas:            " << best_params.n_layers << endl;
     cout << "   Hashmap Size:     2^" << best_params.hashmap_size << endl;
-    cout << "   OneBlob Bins:     " << best_params.n_bins << endl;
+    cout << "   Frecuencias Tiempo: " << best_params.n_bins << endl;
     cout << "   EMA Decay:        " << best_params.ema_decay << endl;
     cout << "   FINAL LOSS:       " << best_params.loss << endl;
     cout << "==========================================" << endl;
@@ -299,7 +304,7 @@ tcnn::json ejecutarGridSearch(
             {"otype", "Composite"},
             {"nested", {
                 { 
-                    {"n_dims_to_encode", 4}, // Posición (3) + Tiempo (1)
+                    {"n_dims_to_encode", 3}, // Posición (3)
                     {"otype", "HashGrid"},
                     {"n_levels", 16},
                     {"n_features_per_level", 2},
@@ -307,10 +312,15 @@ tcnn::json ejecutarGridSearch(
                     {"base_resolution", 16},
                     {"per_level_scale", 1.5f}
                 },
+                {
+                    {"otype", "Frequency"},
+                    {"n_dims_to_encode", 1}, // Tiempo (1 dim)
+                    {"n_frequencies", best_params.n_bins}
+                },
                 { 
                     {"n_dims_to_encode", 6}, // Dirección (3) + Normal (3)
                     {"otype", "OneBlob"}, 
-                    {"n_bins", best_params.n_bins}
+                    {"n_bins", 4}
                 },
                 { 
                     {"n_dims_to_encode", 6}, // Difuso (3) + Especular (3)

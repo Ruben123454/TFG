@@ -73,7 +73,7 @@ public:
             const Primitiva* primitiva_intersectada;
             float u = 0.0f, v = 0.0f;
             
-            if(escena.intersectaPrimitivasBVH(rayo_actual, t_interseccion, &primitiva_intersectada, u, v)) {
+            if(escena.intersectaPrimitivasBVH_tiny(rayo_actual, t_interseccion, &primitiva_intersectada, u, v)) {
 
                 Vector3d punto_interseccion = rayo_actual.origen() + rayo_actual.direccion() * t_interseccion;
                 Vector3d normal = escena.calcularNormal(primitiva_intersectada, punto_interseccion, u, v);
@@ -229,7 +229,7 @@ public:
                         // para que la red aprenda a predecir el tiempo restante hasta la luz
                         double t_input = T_target - tiempo_acumulado; 
 
-                        if (t_input >= t_start && t_input < t_final) {
+                        if (t_input >= 0.0 && t_input < t_final) {
                             // Capturar datos para inferencia
                             datos_inf.posicion = punto_interseccion; 
                             datos_inf.direccion = dir_mapped;
@@ -539,7 +539,7 @@ public:
         // Fase 1 (Warmup): entrenar_red=true, usar_red_inferencia=false → 100% entrenamiento
         // Fase 2 (Post-warmup a frame 80): entrenar_red=true, usar_red_inferencia=true → 3% entrena, 97% infiere
         // Fase 3 (Frame 80+): entrenar_red=false, usar_red_inferencia=true → 0% entrena, 100% infiere
-        bool es_training_pixel = entrenar_red ? (usar_red_inferencia ? (curand_uniform(rand_state) < 0.20f) : true) : false;
+        bool es_training_pixel = entrenar_red ? (usar_red_inferencia ? (curand_uniform(rand_state) < 0.2f) : true) : false;
 
         Color color = lanzarRayoIterativo(rayo, escena, rand_state, x, y, sample_idx, transientRenderer, 
                                             reg_train, guardar_train, 

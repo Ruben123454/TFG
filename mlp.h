@@ -39,6 +39,9 @@ public:
     // Guardar modelo a disco (json con pesos)
     void save_model(const std::string& filename);
 
+    // Cargar modelo desde disco (json con pesos)
+    bool load_model(const std::string& filename);
+
 private:
     // Objetos internos de TCNN
     tcnn::TrainableModel model;

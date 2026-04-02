@@ -60,6 +60,7 @@ add_executable(raytracer
     main.cu
     bvh.cu
     mlp.cu
+    tinybvh_wrapper.cpp
 )
 
 # ----------------------------
@@ -77,6 +78,7 @@ target_include_directories(raytracer PRIVATE
     ${PNG_INCLUDE_DIRS}
     ${ASSIMP_INCLUDE_DIRS}
     ${SDL2_INCLUDE_DIRS}
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tinybvh-main"
     "${TCNN_SOURCE_DIR}/include"
 )
 
