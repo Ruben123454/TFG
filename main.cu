@@ -166,12 +166,14 @@ __global__ void setupRandomStates(curandState* states, unsigned long seed, int t
 // Renderizar usando la red neuronal para inferencia (modo reconstrucción)
 bool renderizarModoReconstruccion(int ancho_imagen, int alto_imagen, const string& nombre_archivo,
                                    const string& ruta_modelo_entrenado,
+                                   int samples_per_pixel,
                                    Camara* d_camara, Primitiva* d_primitivas, int num_primitivas,
                                    LuzPuntual* d_luces, int num_luces, TinyBVH& bvh_modelo_tiny,
                                    Primitiva* d_primitivas_malla, int num_primitivas_malla,
                                    curandState* rand_states, const SceneBounds& scene_bounds,
-                                   TransientRender* transientRenderer, double t_final) {
+                                   TransientRender* transientRenderer, double t_final, bool activar_transient) {
     int num_pixels = ancho_imagen * alto_imagen;
+    if (samples_per_pixel < 1) samples_per_pixel = 1;
     
     cout << "\n================================================" << endl;
     cout << "====         MODO RECONSTRUCCIÓN            ====" << endl;
@@ -223,37 +225,60 @@ bool renderizarModoReconstruccion(int ancho_imagen, int alto_imagen, const strin
     // Limpiar buffers
     cudaMemset(d_mlp_counter, 0, sizeof(unsigned int));
     cudaMemset(d_imagen_data, 0, num_pixels * sizeof(Color));
-    cudaMemset(d_buffer_inference_inputs, 0, num_pixels * sizeof(DatosMLP));
-    cudaMemset(d_buffer_throughput, 0, num_pixels * sizeof(Color));
 
     cout << "\nLanzando rayos y recopilando datos..." << endl;
-    
-    // Lanzar kernel de renderizado que recopila datos
-    kernelRender_tiny<<<gridSize, blockSize>>>(
-        d_camara, d_primitivas, num_primitivas, d_luces, num_luces,
-        d_primitivas_malla, num_primitivas_malla, ancho_imagen, alto_imagen, 1,
-        bvh_modelo_tiny.obtenerDatosGPU(), bvh_modelo_tiny.getPrimitivasGPU(), bvh_modelo_tiny.getNumPrimitivas(),
-        imagen, *transientRenderer, rand_states,
-        nullptr,
-        nullptr,
-        d_mlp_counter, num_pixels,
-        d_buffer_inference_inputs, d_buffer_throughput, 
-        true,   // usar_red_inferencia = true
-        false,  // entrenar_red = false (solo inferencia)
-        0
-    );
-    
-    cudaDeviceSynchronize();
+    cout << "Muestras por píxel en reconstrucción: " << samples_per_pixel << endl;
 
-    cout << "Ejecutando inferencia de la red neuronal..." << endl;
-    
-    // Inferencia para generar predicción
-    mlp->inference(d_buffer_inference_inputs, d_buffer_radiance_predicha, num_pixels);
-    
-    // Componer imagen final: luz directa + (throughput * predicción)
-    kernelComposite<<<gridSize, blockSize>>>(d_imagen_data, d_buffer_radiance_predicha, d_buffer_throughput, ancho_imagen, alto_imagen);
+    vector<Color> acumulador_cpu(num_pixels, Color(0, 0, 0));
+    vector<Color> frame_cpu(num_pixels);
 
-    cudaDeviceSynchronize();
+    for (int s = 0; s < samples_per_pixel; ++s) {
+        cudaMemset(d_mlp_counter, 0, sizeof(unsigned int));
+        cudaMemset(d_imagen_data, 0, num_pixels * sizeof(Color));
+        cudaMemset(d_buffer_inference_inputs, 0, num_pixels * sizeof(DatosMLP));
+        cudaMemset(d_buffer_throughput, 0, num_pixels * sizeof(Color));
+
+        // Lanzar kernel de renderizado que recopila datos
+        kernelRender_tiny<<<gridSize, blockSize>>>(
+            d_camara, d_primitivas, num_primitivas, d_luces, num_luces,
+            d_primitivas_malla, num_primitivas_malla, ancho_imagen, alto_imagen, 1,
+            bvh_modelo_tiny.obtenerDatosGPU(), bvh_modelo_tiny.getPrimitivasGPU(), bvh_modelo_tiny.getNumPrimitivas(),
+            imagen, *transientRenderer, rand_states,
+            nullptr,
+            nullptr,
+            d_mlp_counter, num_pixels,
+            d_buffer_inference_inputs, d_buffer_throughput,
+            true,   // usar_red_inferencia = true
+            false,  // entrenar_red = false (solo inferencia)
+            s
+        );
+
+        cudaDeviceSynchronize();
+
+        // Inferencia para generar predicción
+        mlp->inference(d_buffer_inference_inputs, d_buffer_radiance_predicha, num_pixels);
+
+        // Componer imagen final: luz directa + (throughput * predicción)
+        kernelComposite<<<gridSize, blockSize>>>(d_imagen_data, d_buffer_radiance_predicha, d_buffer_throughput, ancho_imagen, alto_imagen);
+
+        // Si está activo el transient, depositar también la contribución NRC en los bins temporales
+        if (activar_transient) {
+            kernelTransientComposite<<<gridSize, blockSize>>>(
+                d_buffer_inference_inputs, d_buffer_radiance_predicha, d_buffer_throughput,
+                *transientRenderer, ancho_imagen, alto_imagen
+            );
+        }
+
+        cudaDeviceSynchronize();
+
+        cudaMemcpy(frame_cpu.data(), d_imagen_data, num_pixels * sizeof(Color), cudaMemcpyDeviceToHost);
+        for (int i = 0; i < num_pixels; i++) {
+            acumulador_cpu[i] = acumulador_cpu[i] + frame_cpu[i];
+        }
+
+        cout << "\rSample reconstrucción: " << (s + 1) << "/" << samples_per_pixel << flush;
+    }
+    cout << endl;
 
     auto fin = chrono::high_resolution_clock::now();
     auto duracion = chrono::duration_cast<chrono::milliseconds>(fin - inicio);
@@ -263,14 +288,11 @@ bool renderizarModoReconstruccion(int ancho_imagen, int alto_imagen, const strin
     cout << "=================================================" << endl;
     cout << "Tiempo total: " << duracion.count() << " ms" << endl;
 
-    // Copiar resultado a CPU y promediar
-    vector<Color> imagen_cpu(num_pixels);
-    cudaMemcpy(imagen_cpu.data(), d_imagen_data, num_pixels * sizeof(Color), cudaMemcpyDeviceToHost);
-
-    // Crear imagen final
+    // Crear imagen final promediada por número de muestras
     Imagen imagen_final(ancho_imagen, alto_imagen);
-    for(int i = 0; i < num_pixels; i++) {
-        imagen_final.datos[i] = imagen_cpu[i];
+    float inv_samples = 1.0f / (float)samples_per_pixel;
+    for (int i = 0; i < num_pixels; i++) {
+        imagen_final.datos[i] = acumulador_cpu[i] * inv_samples;
     }
 
     cout << "\n==============================================" << endl;
@@ -285,6 +307,28 @@ bool renderizarModoReconstruccion(int ancho_imagen, int alto_imagen, const strin
         cout << "Imagen guardada como: " << nombre_archivo << endl;
     } else {
         cout << "Error al guardar la imagen" << endl;
+    }
+
+    if (activar_transient) {
+        for (int i = 0; i < transientRenderer->num_frames; ++i) {
+            vector<Color> buffer_host = transientRenderer->obtenerFrameHost(i);
+
+            Imagen img_temp(ancho_imagen, alto_imagen);
+            for (int k = 0; k < ancho_imagen * alto_imagen; k++) {
+                Color c = buffer_host[k] * inv_samples;
+                img_temp.datos[k] = c;
+            }
+
+            string base_nombre = nombre_archivo;
+            size_t pos_ext = base_nombre.rfind('.');
+            if (pos_ext != string::npos) base_nombre = base_nombre.substr(0, pos_ext);
+            string nombre = "../transient/" + base_nombre + "_" + to_string(i) + ".png";
+
+            Imagen res = img_temp.gamma();
+            res = res * 1.5f;
+            guardarPNG(res, nombre.c_str());
+        }
+        cout << "Imágenes transient guardadas en carpeta 'transient/'" << endl;
     }
 
     // Limpiar
@@ -307,67 +351,6 @@ void combinarEscenas(Primitiva** d_primitivas, int* num_primitivas, LuzPuntual**
 
     vector<Primitiva> host_primitivas;
     vector<LuzPuntual> host_luces;
-
-    /*
-    // Luz puntual
-    LuzPuntual laser = {};
-    laser.posicion = Vector3d(2.0f, 0.0f, 4.0f);
-    laser.intensidad = Color(5000, 5000, 5000);
-    host_luces.push_back(laser);
-
-    // Relay wall
-    Primitiva relay_wall = {};
-    relay_wall.tipo = PLANO;
-    relay_wall.plano.normal = Vector3d(0, 0, 1);
-    relay_wall.plano.distancia = -6.0f;
-    relay_wall.emision = Color(0,0,0);
-    relay_wall.difuso = Color(0.8f, 0.8f, 0.8f); 
-    relay_wall.especular = Color(0,0,0);
-    relay_wall.transmision = Color(0,0,0);
-    relay_wall.indice_refraccion = 1.0f;
-    host_primitivas.push_back(relay_wall);
-
-    Primitiva suelo = {};
-    suelo.tipo = PLANO;
-    suelo.plano.normal = Vector3d(0, 1, 0);
-    suelo.plano.distancia = -2.0f;
-    suelo.emision = Color(0,0,0);
-    suelo.difuso = Color(0.0f, 0.0f, 0.0f);
-    suelo.especular = Color(0,0,0);
-    suelo.transmision = Color(0,0,0);
-    suelo.indice_refraccion = 1.0f;
-    host_primitivas.push_back(suelo);
-
-    // Muro oclusor
-    Vector3d v0(0.0f, -5.0f,  5.0f);
-    Vector3d v1(0.0f,  5.0f,  5.0f);
-    Vector3d v2(0.0f, -5.0f, -2.0f); 
-    Vector3d v3(0.0f,  5.0f, -2.0f);
-    
-    Primitiva muro_t1 = {};
-    muro_t1.tipo = TRIANGULO;
-    muro_t1.triangulo.v0 = v0;
-    muro_t1.triangulo.v1 = v1;
-    muro_t1.triangulo.v2 = v2;
-    muro_t1.emision = Color(0,0,0);
-    muro_t1.difuso = Color(0.0f, 0.0f, 0.0f);
-    muro_t1.especular = Color(0,0,0);
-    muro_t1.transmision = Color(0,0,0);
-    muro_t1.indice_refraccion = 1.0f;
-    host_primitivas.push_back(muro_t1);
-
-    Primitiva muro_t2 = {};
-    muro_t2.tipo = TRIANGULO;
-    muro_t2.triangulo.v0 = v2;
-    muro_t2.triangulo.v1 = v1;
-    muro_t2.triangulo.v2 = v3;
-    muro_t2.emision = Color(0,0,0);
-    muro_t2.difuso = Color(0.0f, 0.0f, 0.0f);
-    muro_t2.especular = Color(0,0,0);
-    muro_t2.transmision = Color(0,0,0);
-    muro_t2.indice_refraccion = 1.0f;
-    host_primitivas.push_back(muro_t2);
-    */
     
     LuzPuntual luz_techo = {};
     luz_techo.posicion = Vector3d(0, -0.23, -2.0);
@@ -678,8 +661,12 @@ __global__ void inicializarCamara(Camara* d_camara, int ancho_imagen, int alto_i
         */
        
         
-        Vector3d posicion(0, -0.75, 4.25);
-        Vector3d frente(0, 0, -1);
+        //Vector3d posicion(0, -0.75, 4.25);
+        //Vector3d frente(0, 0, -1);
+        //Vector3d arriba(0, 1, 0);
+
+        Vector3d posicion(2.6f, 0.2f, 4.25f);
+        Vector3d frente(-0.6f, -0.25f, -1.0f);
         Vector3d arriba(0, 1, 0);
         
 
@@ -855,16 +842,13 @@ int main() {
         cout << "Introduce el número de muestras por píxel (samples per pixel): ";
         cin >> samples_per_pixel;
         
-        if (modo == 1) {
-            cout << "¿Deseas cargar un modelo 3D externo? (1 = Sí, 0 = No): ";
-            cin >> cargar_modelo;
-        }
-
+        cout << "¿Deseas cargar un modelo 3D externo? (1 = Sí, 0 = No): ";
+        cin >> cargar_modelo;
+        
         bool activar_transient = false;
-        if (modo == 1) {
-            cout << "¿Activar render transitorio? (1 = Sí, 0 = No): ";
-            cin >> activar_transient;
-        }
+        cout << "¿Activar render transitorio? (1 = Sí, 0 = No): ";
+        cin >> activar_transient;
+        
 
         int num_pixels = ancho_imagen * alto_imagen;
 
@@ -1061,9 +1045,10 @@ int main() {
         // MODO RECONSTRUCCIÓN: Solo inferencia de MLP
         if (modo == 2) {
             if (!renderizarModoReconstruccion(ancho_imagen, alto_imagen, nombre_archivo, ruta_modelo_entrenado,
+                                         samples_per_pixel,
                                          d_camara, d_primitivas, num_primitivas, d_luces, num_luces,
                                          bvh_modelo_tiny, d_primitivas_malla, num_primitivas_malla,
-                                         rand_states, scene_bounds, transientRenderer, t_final)) {
+                                         rand_states, scene_bounds, transientRenderer, t_final, activar_transient)) {
                 return 1;
             }
             cudaFree(rand_states);
@@ -1293,7 +1278,7 @@ int main() {
             cout << "Render transitorio desactivado, no se guardan frames transient." << endl;
         }
 
-        // Copiar datos de GPU a la imagen
+        // Crear imagen final promediando muestras
         Imagen imagenCPU(ancho_imagen, alto_imagen);
         float inv_samples = 1.0f / (float)frames_acumulados_reales;
         for (int i = 0; i < ancho_imagen * alto_imagen; i++) {
