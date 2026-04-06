@@ -48,7 +48,7 @@ __device__ inline uint32_t sign_extend_s8x4(const uint32_t i) {
 #define UPDATE_HITMASK2 asm( "vshl.u32.u32.u32.wrap.add %0,%1.b2, %2.b2, %3;" : "=r"(hitmask) : "r"(child_bits4), "r"(bit_index4), "r"(hitmask) )
 #define UPDATE_HITMASK3 asm( "vshl.u32.u32.u32.wrap.add %0,%1.b3, %2.b3, %3;" : "=r"(hitmask) : "r"(child_bits4), "r"(bit_index4), "r"(hitmask) )
 
-__device__ float4 traverse_cwbvh(const float4* cwbvhNodes, const float4* cwbvhTris, const float3 O, const float3 D, const float3 rD, const float t_max, uint32_t* stepCount)
+static __device__ inline float4 traverse_cwbvh(const float4* cwbvhNodes, const float4* cwbvhTris, const float3 O, const float3 D, const float3 rD, const float t_max, uint32_t* stepCount)
 {
     float4 hit = make_float4(t_max, 0.0f, 0.0f, __int_as_float(-1));
     uint2 stack[STACK_SIZE];

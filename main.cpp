@@ -3,7 +3,7 @@
 // Mir Ramos, Rubén 869039
 // Lopez Torralba, Alejandro 845154
 //
-// main.cu
+// main.cpp
 // ################
 
 #ifdef __CUDACC__
@@ -36,8 +36,6 @@
 #include "imagen_gpu.h"
 #include "camara.h"
 #include "primitiva.h"
-#include "render.h"
-#include "escenario.h"
 #include "color.h"
 #include "vector3d.h"
 #include "cargarModelo.h"
@@ -47,89 +45,9 @@
 #include "gridsearch.h"
 #include "visualizador.h"
 #include "tinybvh_wrapper.h"
+#include "RenderKernel.h"
 
 using namespace std;
-
-// Función kernel para renderizar la escena en la GPU
-__global__ void kernelRender(const Camara* camara, const Primitiva* primitivas, int num_primitivas, const LuzPuntual* luces, int num_luces,
-                            const Primitiva* primitivas_malla, int num_primitivas_malla, int ancho_img, int alto_img, int samples_per_pixel, 
-                            const NodoBVH* nodos_bvh, const Primitiva* primitivas_bvh, int num_nodos_bvh, 
-                            ImagenGPU imagen_directa,
-                            curandState* rand_states, 
-                            // Datos para ENTRENAMIENTO
-                            unsigned int* dev_counter, RegistroEntrenamiento* buffer_registros, unsigned int* counter_train, int max_cap_train,
-                            // Datos para INFERENCIA
-                            DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red) { 
-
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-
-    if(x < ancho_img && y < alto_img) {
-        Escenario escena(const_cast<Primitiva*>(primitivas), num_primitivas, const_cast<LuzPuntual*>(luces), num_luces,
-                        const_cast<Primitiva*>(primitivas_malla), num_primitivas_malla, nodos_bvh, primitivas_bvh, num_nodos_bvh);
-        Render renderer(0.9, samples_per_pixel);
-                    
-        renderer.renderizar(*camara, escena, ancho_img, alto_img, x, y, 
-                            imagen_directa, rand_states, 
-                            dev_counter, buffer_registros, counter_train, max_cap_train,
-                            buffer_inference, buffer_throughput, usar_red_inferencia, entrenar_red);
-    }
-}
-
-__global__ void kernelRender_tiny(const Camara* camara, const Primitiva* primitivas, int num_primitivas, const LuzPuntual* luces, int num_luces,
-                            const Primitiva* primitivas_malla, int num_primitivas_malla, int ancho_img, int alto_img, int samples_per_pixel, 
-                            TinyBVHD_GPU nodos_bvh, const Primitiva* primitivas_bvh, int num_nodos_bvh, 
-                            ImagenGPU imagen_directa,
-                            curandState* rand_states, 
-                            // Datos para ENTRENAMIENTO
-                            unsigned int* dev_counter, RegistroEntrenamiento* buffer_registros, unsigned int* counter_train, int max_cap_train,
-                            // Datos para INFERENCIA
-                            DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red) { 
-
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-
-    if(x < ancho_img && y < alto_img) {
-        Escenario escena(const_cast<Primitiva*>(primitivas), num_primitivas, const_cast<LuzPuntual*>(luces), num_luces,
-                        const_cast<Primitiva*>(primitivas_malla), num_primitivas_malla, nodos_bvh, primitivas_bvh, num_nodos_bvh);
-        Render renderer(0.9, samples_per_pixel);
-                    
-        renderer.renderizar(*camara, escena, ancho_img, alto_img, x, y, 
-                            imagen_directa, rand_states, 
-                            dev_counter, buffer_registros, counter_train, max_cap_train,
-                            buffer_inference, buffer_throughput, usar_red_inferencia, entrenar_red);
-    }
-}
-
-// Combina la imagen física (PT) con la predicción neuronal
-// Pixel = LuzPT + (Throughput * Prediccion_Red)
-__global__ void kernelComposite(Color* img_pt, Color* img_prediccion, Color* throughput_map, 
-                                int ancho, int alto) {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-    int idx = y * ancho + x;
-
-    if(x < ancho && y < alto) {
-        Color final = img_pt[idx]; // L_directa + Emisión (Path Tracing limpio)
-        Color th = throughput_map[idx];
-        Color indirecta_neuronal = img_prediccion[idx];
-
-        // Solo sumamos la red si el rayo chocó con una superficie y consultó el MLP
-        if (th.r > 0 || th.g > 0 || th.b > 0) {
-            final = final + (th * indirecta_neuronal);
-        } 
-        
-        // Guardamos el resultado combinado
-        img_pt[idx] = final;
-    }
-}
-
-__global__ void setupRandomStates(curandState* states, unsigned long seed, int total_threads) {
-    int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    if (idx < total_threads) {
-        curand_init(seed, idx, 0, &states[idx]);
-    }
-}
 
 // Combinar escena manual con modelo cargado
 void combinarEscenas(Primitiva** d_primitivas, int* num_primitivas, LuzPuntual** d_luces, int* num_luces) {
@@ -426,181 +344,118 @@ void inicializarEscena(Primitiva** d_primitivas, int* num_primitivas, LuzPuntual
             host_primitivas.size() << " primitivas, " << host_luces.size() << " luces puntuales" << endl;
 }
 
-// Inicializar cámara
-__global__ void inicializarCamara(Camara* d_camara, int ancho_imagen, int alto_imagen) {
-    if (threadIdx.x == 0 && blockIdx.x == 0) {
-        float distancia_focal = 1.0f;
-        float fov_grados = 45.0f;
-        float fov_radianes = fov_grados * M_PI / 180.0f;
-        float alto_plano = 2.0f * distancia_focal * tan(fov_radianes / 2.0f);
-        float ancho_plano = alto_plano * (static_cast<float>(ancho_imagen) / alto_imagen);
-        
-        // Usar el constructor de CamaraGPU
-        //Vector3d posicion(0, 0, 5);
-        //Vector3d frente(0, 0, -1);
-        //Vector3d arriba(0, 1, 0);
-
-        //Vector3d posicion(0, -0.75, 4.25);
-        //Vector3d frente(0, 0, -1);
-        //Vector3d arriba(0, 1, 0);
-
-        Vector3d posicion(2.6f, 0.2f, 4.25f);
-        Vector3d frente(-0.6f, -0.25f, -1.0f);
-        Vector3d arriba(0, 1, 0);
-
-        *d_camara = Camara(posicion, frente, arriba, ancho_plano, alto_plano, distancia_focal);
-    }
-}
 
 // Inicializar estados aleatorios para cada thread
-curandState* inicializarEstadosAleatorios(int ancho, int alto) {
-    // Calcular el grid que usará el kernel de renderizado
-    dim3 blockSize(16, 16);
-    dim3 gridSize((ancho + blockSize.x - 1) / blockSize.x, 
-                  (alto + blockSize.y - 1) / blockSize.y);
-    
-    int total_threads = gridSize.x * gridSize.y * blockSize.x * blockSize.y;
-    curandState* d_states;
-    cudaMalloc(&d_states, total_threads * sizeof(curandState));
-    
-    int block_size = 256;
-    int num_blocks = (total_threads + block_size - 1) / block_size;
-    
-    setupRandomStates<<<num_blocks, block_size>>>(d_states, time(NULL), total_threads);
-    cudaDeviceSynchronize();
-    
-    return d_states;
-}
-
 // Liberar memoria GPU
-void limpiarGPU(Primitiva* d_primitivas, LuzPuntual* d_luces, curandState* rand_states) {
+void limpiarGPU(Primitiva* d_primitivas, LuzPuntual* d_luces) {
     if (d_primitivas) {
         cudaFree(d_primitivas);
     }
     if (d_luces) {
         cudaFree(d_luces);
     }
-    if (rand_states) {
-        cudaFree(rand_states);
-    }
 }
 
-// Kernel que se ejecuta después de la inferencia del Tail y antes del entrenamiento
-// para calcular los targets finales combinando el sufijo real con la predicción del Tail
-__global__ void kernelCalcularTargets(
-    RegistroEntrenamiento* buffer_registros, 
-    Color* buffer_prediccion_tail,
-    DatosMLP* buffer_training_final,
-    int num_elementos
-) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= num_elementos) return;
-
-    RegistroEntrenamiento reg = buffer_registros[idx];
-    
-    if (!reg.valido) {
-        buffer_training_final[idx].color = Color(0,0,0);
-        return;
+bool moverCamara(GLFWwindow* window, Camara* d_camara, float delta_time_s, float velocidad = 2.5f) {
+    if (!window || !d_camara) {
+        return false;
     }
 
-    Color iluminacion_tail = buffer_prediccion_tail[idx];
-    
-    // Radiancia total recolectada por el sufijo
-    Color radiance_total = reg.luz_acumulada_sufijo + (reg.throughput_sufijo * iluminacion_tail);
-    
-    // Denominador: throughput_at_train_vertex * reflectancia_train
-    Color denominador = reg.factor_normalizacion;
-    
-    // Estabilización numérica de la división
-    float safe_eps = 1e-8f; 
-    
-    Color target_final;
-    target_final.r = radiance_total.r / fmaxf(denominador.r, safe_eps);
-    target_final.g = radiance_total.g / fmaxf(denominador.g, safe_eps);
-    target_final.b = radiance_total.b / fmaxf(denominador.b, safe_eps);
+    const bool key_w = glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS;
+    const bool key_a = glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS;
+    const bool key_s = glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS;
+    const bool key_d = glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS;
 
-    // Clamping del target final
-    // Evita que un solo pixel con valor infinito destruya los pesos del HashGrid
-    float max_radiance = 100000.0f;
-    target_final.r = fminf(target_final.r, max_radiance);
-    target_final.g = fminf(target_final.g, max_radiance);
-    target_final.b = fminf(target_final.b, max_radiance);
+    const bool key_up = glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS;
+    const bool key_down = glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS; 
+    const bool key_left = glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS;
+    const bool key_right = glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS;
 
-    // Protección extrema contra NaNs (Not a Number) e Infinitos
-    if (isnan(target_final.r) || isinf(target_final.r)) target_final.r = 0.0f;
-    if (isnan(target_final.g) || isinf(target_final.g)) target_final.g = 0.0f;
-    if (isnan(target_final.b) || isinf(target_final.b)) target_final.b = 0.0f;
-
-    DatosMLP d;
-    d.posicion = reg.head.posicion;
-    d.direccion = reg.head.direccion;
-    d.normal = reg.head.normal;
-    d.difuso = reg.head.difuso;
-    d.especular = reg.head.especular;
-    d.color = target_final;
-
-    buffer_training_final[idx] = d;
-}
-
-// Kernel para extraer la geometría del Tail y prepararla para la red
-__global__ void kernelPrepararInferenciaTail(
-    const RegistroEntrenamiento* __restrict__ source_registros,
-    DatosMLP* __restrict__ dest_inference_inputs,
-    int num_elements
-) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= num_elements) return;
-
-    const RegistroEntrenamiento& reg = source_registros[idx];
-    
-    DatosMLP d;
-    d.posicion = Vector3d(0,0,0);
-    d.direccion = Vector3d(0,0,0); 
-    d.normal = Vector3d(0,0,0);
-    d.difuso = Color(0,0,0);
-    d.especular = Color(0,0,0);
-    d.color = Color(0,0,0);
-
-    if (reg.valido) {
-        d.posicion = reg.tail.posicion;
-        d.direccion = reg.tail.direccion;
-        d.normal = reg.tail.normal;
-        d.difuso = reg.tail.difuso;
-        d.especular = reg.tail.especular;
+    if (!key_w && !key_a && !key_s && !key_d && !key_up && !key_down && !key_left && !key_right) {
+        return false;
     }
 
-    dest_inference_inputs[idx] = d;
+    alignas(Camara) unsigned char cam_mem[sizeof(Camara)];
+    Camara* cam_h = reinterpret_cast<Camara*>(cam_mem);
+
+    cudaError_t err = cudaMemcpy(cam_h, d_camara, sizeof(Camara), cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) {
+        return false;
+    }
+
+    if (key_up || key_down || key_left || key_right) {
+        Vector3d front = cam_h->frente.normalized();
+        double fy = std::max(-1.0, std::min(1.0, front.y));
+
+        double yaw = atan2(front.x, -front.z);
+        double pitch = asin(fy);
+
+        const double rot_speed = 0.5; // rad/s
+        const double rot_step = rot_speed * static_cast<double>(delta_time_s);
+
+        if (key_left)  yaw -= rot_step;
+        if (key_right) yaw += rot_step;
+        if (key_up)    pitch += rot_step;
+        if (key_down)  pitch -= rot_step;
+
+        const double pitch_limit = 1.55334306; // ~89 grados
+        if (pitch > pitch_limit) pitch = pitch_limit;
+        if (pitch < -pitch_limit) pitch = -pitch_limit;
+
+        Vector3d new_front(
+            sin(yaw) * cos(pitch),
+            sin(pitch),
+            -cos(yaw) * cos(pitch)
+        );
+        new_front = new_front.normalized();
+
+        Vector3d world_up(0.0, 1.0, 0.0);
+        Vector3d new_left = new_front.cross(world_up).normalized();
+        if (new_left.lengthSquared() < 1e-10) {
+            new_left = cam_h->izquierda.normalized();
+        }
+        Vector3d new_up = new_left.cross(new_front).normalized();
+
+        cam_h->frente = new_front;
+        cam_h->izquierda = new_left;
+        cam_h->arriba = new_up;
+    }
+
+    Vector3d forward = cam_h->frente.normalized();
+    if (forward.lengthSquared() < 1e-10) {
+        forward = Vector3d(0.0, 0.0, -1.0);
+    }
+
+    Vector3d right = (-cam_h->izquierda).normalized();
+    if (right.lengthSquared() < 1e-10) {
+        right = Vector3d(1.0, 0.0, 0.0);
+    }
+
+    Vector3d delta(0.0, 0.0, 0.0);
+    double paso = static_cast<double>(velocidad) * static_cast<double>(delta_time_s);
+
+    if (key_w) delta = delta + forward * paso;
+    if (key_s) delta = delta - forward * paso;
+    if (key_d) delta = delta - right * paso;
+    if (key_a) delta = delta + right * paso;
+
+    if (delta.lengthSquared() < 1e-12) {
+        err = cudaMemcpy(d_camara, cam_h, sizeof(Camara), cudaMemcpyHostToDevice);
+        return err == cudaSuccess;
+    }
+
+    cam_h->posicion = cam_h->posicion + delta;
+
+    err = cudaMemcpy(d_camara, cam_h, sizeof(Camara), cudaMemcpyHostToDevice);
+    return err == cudaSuccess;
 }
 
-// Kernel para desordenar los datos de entrenamiento usando curand
-__global__ void kernelShuffle(
-    const DatosMLP* __restrict__ input_data,
-    DatosMLP* __restrict__ shuffled_data,
-    unsigned int num_elements,
-    curandState* __restrict__ rand_states
-) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= num_elements) return;
-
-    // Obtener estado aleatorio para este thread
-    curandState localState = rand_states[idx];
-    
-    // Generar índice destino aleatorio
-    unsigned int dest_idx = (unsigned int)(curand_uniform(&localState) * num_elements);
-    dest_idx = min(dest_idx, num_elements - 1);
-
-    // Guardar estado actualizado
-    rand_states[idx] = localState;
-
-    // Escribimos el dato en su nueva posición desordenada
-    shuffled_data[dest_idx] = input_data[idx];
-}
 
 bool renderizarModoReconstruccion(
     int ancho_imagen,
     int alto_imagen,
     int samples_per_pixel,
-    const string& nombre_archivo,
+    string nombre_archivo,
     const string& ruta_modelo,
     Camara* d_camara,
     const Primitiva* d_primitivas,
@@ -610,8 +465,9 @@ bool renderizarModoReconstruccion(
     const Primitiva* d_primitivas_malla,
     int num_primitivas_malla,
     const TinyBVH& bvh_modelo_tiny,
-    curandState* rand_states,
-    const SceneBounds& scene_bounds
+    const SceneBounds& scene_bounds,
+    Visualizador* ventana,
+    RenderGuiState& runtime_state
 ) {
     int num_pixels = ancho_imagen * alto_imagen;
 
@@ -650,17 +506,68 @@ bool renderizarModoReconstruccion(
     dim3 gridSize((ancho_imagen + blockSize.x - 1) / blockSize.x,
                   (alto_imagen + blockSize.y - 1) / blockSize.y);
 
+    if (ventana == nullptr) {
+        cerr << "[UI] Ventana no válida en modo reconstrucción." << endl;
+        cudaFree(d_imagen_data);
+        cudaFree(d_buffer_inference_inputs);
+        cudaFree(d_buffer_radiance_predicha);
+        cudaFree(d_buffer_throughput);
+        return false;
+    }
+
+    runtime_state.warmupActive = false;
+    runtime_state.pauseRendering = false;
+    runtime_state.resetAccumulation = false;
+
+    ventana->actualizar(acumulador_cpu, 1);
+
     auto inicio = chrono::high_resolution_clock::now();
-    for (int s = 0; s < samples_per_pixel; ++s) {
+    auto render_inicio = chrono::high_resolution_clock::now();
+    auto last_input_time = chrono::high_resolution_clock::now();
+    int sample_actual = 0;
+    int iteracion = 0;
+
+    while (sample_actual < samples_per_pixel && ventana->procesarEventos()) {
+        iteracion++;
+
+        auto now_input = chrono::high_resolution_clock::now();
+        float dt_input = chrono::duration<float>(now_input - last_input_time).count();
+        last_input_time = now_input;
+
+        if (moverCamara(ventana->window, d_camara, dt_input)) {
+            runtime_state.resetAccumulation = true;
+        }
+
+        if (runtime_state.resetAccumulation) {
+            fill(acumulador_cpu.begin(), acumulador_cpu.end(), Color(0,0,0));
+            sample_actual = 0;
+            runtime_state.resetAccumulation = false;
+            render_inicio = chrono::high_resolution_clock::now();
+        }
+
+        if(runtime_state.configUpdate) {
+            samples_per_pixel = runtime_state.samplesPerPixel;
+            runtime_state.configUpdate = false;
+        }
+
+        if (runtime_state.pauseRendering) {
+            int muestras_gui = sample_actual > 0 ? sample_actual : 1;
+            ventana->actualizar(acumulador_cpu, muestras_gui);
+            std::this_thread::sleep_for(std::chrono::milliseconds(8));
+            continue;
+        }
+
+        auto frame_inicio = chrono::high_resolution_clock::now();
+
         cudaMemset(d_imagen_data, 0, num_pixels * sizeof(Color));
         cudaMemset(d_buffer_inference_inputs, 0, num_pixels * sizeof(DatosMLP));
         cudaMemset(d_buffer_throughput, 0, num_pixels * sizeof(Color));
 
-        kernelRender_tiny<<<gridSize, blockSize>>>(
+        launchKernelRenderTiny(gridSize, blockSize,
             d_camara, d_primitivas, num_primitivas, d_luces, num_luces,
-            d_primitivas_malla, num_primitivas_malla, ancho_imagen, alto_imagen, 1,
+            d_primitivas_malla, num_primitivas_malla, ancho_imagen, alto_imagen, 1, sample_actual,
             bvh_modelo_tiny.obtenerDatosGPU(), bvh_modelo_tiny.getPrimitivasGPU(), bvh_modelo_tiny.getNumPrimitivas(),
-            imagen, rand_states,
+            imagen,
             nullptr, nullptr, nullptr, 0,
             d_buffer_inference_inputs, d_buffer_throughput, 
             true, false
@@ -687,7 +594,7 @@ bool renderizarModoReconstruccion(
         }
 
         mlp->inference(d_buffer_inference_inputs, d_buffer_radiance_predicha, num_pixels);
-        kernelComposite<<<gridSize, blockSize>>>(d_imagen_data, d_buffer_radiance_predicha, d_buffer_throughput, ancho_imagen, alto_imagen);
+        launchKernelComposite(gridSize, blockSize, d_imagen_data, d_buffer_radiance_predicha, d_buffer_throughput, ancho_imagen, alto_imagen);
         cudaDeviceSynchronize();
 
         cudaMemcpy(frame_cpu.data(), d_imagen_data, num_pixels * sizeof(Color), cudaMemcpyDeviceToHost);
@@ -695,7 +602,22 @@ bool renderizarModoReconstruccion(
             acumulador_cpu[i] = acumulador_cpu[i] + frame_cpu[i];
         }
 
-        cout << "\rSample: " << (s + 1) << "/" << samples_per_pixel << flush;
+        sample_actual++;
+
+        auto frame_fin = chrono::high_resolution_clock::now();
+        runtime_state.lastFrameMs = chrono::duration<float, std::milli>(frame_fin - frame_inicio).count();
+        runtime_state.lastFrameMs = chrono::duration<float, std::milli>(frame_fin - frame_inicio).count();
+        runtime_state.totalRenderMs = chrono::duration<float, std::milli>(frame_fin - render_inicio).count();
+
+        if (iteracion % 2 == 0) {
+            ventana->actualizar(acumulador_cpu, sample_actual);
+        }
+
+        cout << "\rSample: " << sample_actual << "/" << samples_per_pixel << " [RECONSTRUCCION]" << flush;
+    }
+
+    if (glfwWindowShouldClose(ventana->window)) {
+        cout << "\nVentana cerrada por el usuario." << endl;
     }
     cout << endl;
 
@@ -708,23 +630,41 @@ bool renderizarModoReconstruccion(
     cout << "Tiempo de renderizado GPU: " << duracion.count() << " ms" << endl;
 
     Imagen imagenCPU(ancho_imagen, alto_imagen);
-    float inv_samples = 1.0f / (float)samples_per_pixel;
+    float inv_samples = 1.0f / (float)max(1, sample_actual);
     for (int i = 0; i < num_pixels; ++i) {
         imagenCPU.datos[i] = acumulador_cpu[i] * inv_samples;
     }
 
     Imagen imagen_final = imagenCPU.filmic();
-    if (guardarPNG(imagen_final, nombre_archivo.c_str())) {
-        cout << "Imagen guardada como: " << nombre_archivo << endl;
+
+    runtime_state.accumulatedSamples = sample_actual;
+    runtime_state.warmupActive = false;
+    runtime_state.pauseRendering = true;
+    runtime_state.renderingComplete = true;
+    runtime_state.requestSave = false;
+
+    while (runtime_state.renderingComplete && ventana->procesarEventos()) {
+        int muestras_gui = sample_actual > 0 ? sample_actual : 1;
+        ventana->actualizar(acumulador_cpu, muestras_gui);
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    }
+
+    if (runtime_state.requestSave) {
+        nombre_archivo = runtime_state.outputFileName;
+        if (guardarPNG(imagen_final, nombre_archivo.c_str())) {
+            cout << "Imagen guardada como: " << nombre_archivo << endl;
+        } else {
+            cout << "Error al guardar la imagen" << endl;
+        }
     } else {
-        cout << "Error al guardar la imagen" << endl;
+        cout << "Imagen no guardada." << endl;
     }
 
     cudaFree(d_imagen_data);
     cudaFree(d_buffer_inference_inputs);
     cudaFree(d_buffer_radiance_predicha);
     cudaFree(d_buffer_throughput);
-    return true;
+    return sample_actual > 0;
 }
 
 int main() {
@@ -732,46 +672,62 @@ int main() {
     cudaSetDeviceFlags(cudaDeviceMapHost);
 
     try {
-        // Selección de modo
         cout << "================================================" << endl;
-        cout << "====            SELECCIONAR MODO            ====" << endl;
-        cout << "================================================" << endl;
-        cout << "1. Modo normal (entrenamiento + uso)" << endl;
-        cout << "2. Modo reconstruccion (solo inferencia)" << endl;
-        cout << "Selecciona una opcion (1 o 2): ";
-
-        int modo = 1;
-        cin >> modo;
-        if (modo != 1 && modo != 2) {
-            cerr << "Opcion invalida." << endl;
-            return 1;
-        }
-
-        // Configuración básica
-        cout << "================================================" << endl;
-        cout << "====          CONFIGURACIÓN IMAGEN          ====" << endl;
+        cout << "====       INICIALIZANDO INTERFAZ         ====" << endl;
         cout << "================================================" << endl;
         
-        int ancho_imagen;
-        int alto_imagen;
-        int samples_per_pixel;
-        bool cargar_modelo = false;
-        string ruta_modelo_entrenado = "mlp_model.json";
+        // Crear visualizador con configuración inicial
+        std::unique_ptr<Visualizador> ventana_config = std::make_unique<Visualizador>(1024, 768, "Renderizador NRC - Configuración");
+        RenderGuiState gui_state;
 
-        cout << "Introduce el ancho de la imagen (px): ";
-        cin >> ancho_imagen;
-        cout << "Introduce el alto de la imagen (px): ";
-        cin >> alto_imagen;
-        cout << "Introduce el número de muestras por píxel (samples per pixel): ";
-        cin >> samples_per_pixel;
-        cout << "¿Deseas cargar un modelo 3D externo? (1 = Sí, 0 = No): ";
-        cin >> cargar_modelo;
+        // Esperar a que el usuario configure los parámetros
+        bool config_done = false;
+        while (!config_done && ventana_config->procesarEventos()) {
+            int fbw = 0, fbh = 0;
+            glfwGetFramebufferSize(ventana_config->window, &fbw, &fbh);
+            glViewport(0, 0, fbw, fbh);
+            glClearColor(0.08f, 0.08f, 0.10f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
 
+            ventana_config->gui.beginFrame();
+            ventana_config->gui.drawConfigScreen(gui_state);
+            ventana_config->gui.endFrame(fbw, fbh);
+            glfwSwapBuffers(ventana_config->window);
+
+            if (gui_state.readyToRender) {
+                config_done = true;
+            }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        }
+
+        if (!config_done) {
+            cout << "Configuración cancelada por el usuario." << endl;
+            return 0;
+        }
+
+        cout << "Configuración completada:" << endl;
+        cout << "  Modo: " << (gui_state.renderMode == 0 ? "Normal" : "Reconstrucción") << endl;
+        cout << "  Ancho: " << gui_state.imageWidth << endl;
+        cout << "  Alto: " << gui_state.imageHeight << endl;
+        cout << "  SPP: " << gui_state.samplesPerPixel << endl;
+        cout << "  Cargar modelo: " << (gui_state.loadModel ? "Sí" : "No") << endl;
+        cout << "  Guardar modelo MLP: " << (gui_state.saveMlpModel ? "Sí" : "No") << endl;
+        cout << "  Archivo salida: " << gui_state.outputFileName << endl;
+
+        int ancho_imagen = gui_state.imageWidth;
+        int alto_imagen = gui_state.imageHeight;
+        int samples_per_pixel = gui_state.samplesPerPixel;
+        bool cargar_modelo = gui_state.loadModel;
+        string nombre_archivo = gui_state.outputFileName;
+        string ruta_modelo_entrenado = gui_state.mlpModelPath;
         int num_pixels = ancho_imagen * alto_imagen;
 
-        string nombre_archivo;
-        cout << "Introduce el nombre del archivo de salida: ";
-        cin >> nombre_archivo;
+        // Reutilizar la misma ventana (evita reinicio de interfaz)
+        std::unique_ptr<Visualizador> ventana = std::move(ventana_config);
+        ventana->configurarRenderTarget(ancho_imagen, alto_imagen, "Renderizado en Tiempo Real - NRC");
+        RenderGuiState& runtime_state = ventana->uiState();
+        runtime_state = gui_state;
 
         // Variable para verificar errores CUDA
         cudaError_t err;
@@ -870,6 +826,10 @@ int main() {
             combinarEscenas(&d_primitivas, &num_primitivas, &d_luces, &num_luces);
             int num_primitivas_malla = modelo_prims.size();
             cout << "   -Malla: " << num_primitivas_malla << " primitivas" << endl;
+
+            runtime_state.bvh = true;
+            runtime_state.bvhNodes = bvh_modelo_tiny.getNumNodos();
+            runtime_state.bvhPrimitives = bvh_modelo_tiny.getNumPrimitivas();
         } else {
             // Inicializar escena básica sin modelo
             inicializarEscena(&d_primitivas, &num_primitivas, &d_luces, &num_luces);
@@ -885,7 +845,7 @@ int main() {
         Camara* d_camara;
         cudaMalloc(&d_camara, sizeof(Camara));
         
-        inicializarCamara<<<1, 1>>>(d_camara, ancho_imagen, alto_imagen);
+        launchInicializarCamara(d_camara, ancho_imagen, alto_imagen);
         cudaDeviceSynchronize();
         
         // Verificar errores después de la inicialización de la cámara
@@ -902,9 +862,6 @@ int main() {
             return 1;
         }
 
-        // Inicializar estados aleatorios para samples per pixel
-        curandState* rand_states = inicializarEstadosAleatorios(ancho_imagen, alto_imagen);
-
         // Configurar y lanzar kernel
         dim3 blockSize(16, 16);
         dim3 gridSize((ancho_imagen + blockSize.x - 1) / blockSize.x, 
@@ -914,7 +871,8 @@ int main() {
         scene_bounds.min = Vector3d(-6.0f, -4.0f, -10.0f);
         scene_bounds.max = Vector3d( 6.0f,  6.0f,  2.0f);
 
-        if (modo == 2) {
+        // Ejecutar modo reconstrucción si está seleccionado
+        if (gui_state.renderMode == 1) {
             bool ok = renderizarModoReconstruccion(
                 ancho_imagen, alto_imagen, samples_per_pixel, nombre_archivo,
                 ruta_modelo_entrenado,
@@ -923,12 +881,14 @@ int main() {
                 d_luces, num_luces,
                 d_primitivas_malla, num_primitivas_malla,
                 bvh_modelo_tiny,
-                rand_states,
-                scene_bounds
+                scene_bounds,
+                ventana.get(),
+                runtime_state
             );
 
             cudaFree(d_camara);
-            limpiarGPU(d_primitivas, d_luces, rand_states);
+            limpiarGPU(d_primitivas, d_luces);
+            
             return ok ? 0 : 1;
         }
 
@@ -983,25 +943,65 @@ int main() {
         ofstream loss_file("loss_log.txt");
         cout << "[MLP] Red inicializada." << endl;
 
-        // Inicializar visualizador
-        Visualizador ventana(ancho_imagen, alto_imagen, "Renderizado en Tiempo Real - NRC");
-
         int WARMUP_SAMPLES = 48;
         
         int frames_acumulados_reales = 0;
 
+        // Mostrar la ventana de render desde el inicio para evitar pantalla vacia durante warmup
+        runtime_state.warmupActive = true;
+        ventana->actualizar(acumulador_cpu, 1);
+
         // Lanzar kernel principal
         auto inicio = chrono::high_resolution_clock::now();
+        auto render_inicio = chrono::high_resolution_clock::now();
+        auto last_input_time = chrono::high_resolution_clock::now();
         for (int s = 0; s < samples_per_pixel + WARMUP_SAMPLES; ++s) {
+            if (!ventana->procesarEventos()) {
+                cout << "\nVentana cerrada por el usuario." << endl;
+                break;
+            }
+
+            auto now_input = chrono::high_resolution_clock::now();
+            float dt_input = chrono::duration<float>(now_input - last_input_time).count();
+            last_input_time = now_input;
+
+            if (moverCamara(ventana->window, d_camara, dt_input)) {
+                runtime_state.resetAccumulation = true;
+            }
+
+            if (runtime_state.resetAccumulation) {
+                fill(acumulador_cpu.begin(), acumulador_cpu.end(), Color(0,0,0));
+                frames_acumulados_reales = 0;
+                runtime_state.resetAccumulation = false;
+                s = WARMUP_SAMPLES;
+                render_inicio = chrono::high_resolution_clock::now();
+            }
+
+            if (runtime_state.pauseRendering) {
+                int muestras_gui = frames_acumulados_reales > 0 ? frames_acumulados_reales : 1;
+                ventana->actualizar(acumulador_cpu, muestras_gui);
+                std::this_thread::sleep_for(std::chrono::milliseconds(8));
+                s--;
+                continue;
+            }
+
+            if(runtime_state.configUpdate) {
+                samples_per_pixel = runtime_state.samplesPerPixel;
+                runtime_state.configUpdate = false;
+            }
+
+            auto frame_inicio = chrono::high_resolution_clock::now();
+
             // Fase 1 (Warmup): 100% entrenamiento
             // Fase 2 3% entrena, 97% infiere
             bool es_warmup = (s < WARMUP_SAMPLES);
+            runtime_state.warmupActive = es_warmup;
             
             cudaMemset(d_mlp_counter, 0, sizeof(unsigned int));
             cudaMemset(d_imagen_data, 0, num_pixels * sizeof(Color));
 
             /*
-            kernelRender<<<gridSize, blockSize>>>(
+            launchKernelRender(gridSize, blockSize,
                 d_camara, d_primitivas, num_primitivas, d_luces, num_luces,
                 d_primitivas_malla, num_primitivas_malla, ancho_imagen, alto_imagen, 1,
                 bvh_modelo.getNodosGPU(), bvh_modelo.getPrimitivasGPU(), bvh_modelo.getNumNodos(),
@@ -1013,11 +1013,11 @@ int main() {
             */
             
             // Escenario con BVH Tiny
-            kernelRender_tiny<<<gridSize, blockSize>>>(
+            launchKernelRenderTiny(gridSize, blockSize,
                 d_camara, d_primitivas, num_primitivas, d_luces, num_luces,
-                d_primitivas_malla, num_primitivas_malla, ancho_imagen, alto_imagen, 1,
+                d_primitivas_malla, num_primitivas_malla, ancho_imagen, alto_imagen, runtime_state.samplesPerFrame, s,
                 bvh_modelo_tiny.obtenerDatosGPU(), bvh_modelo_tiny.getPrimitivasGPU(), bvh_modelo_tiny.getNumPrimitivas(),
-                imagen, rand_states,
+                imagen,
                 nullptr, d_buffer_registros_raw, d_mlp_counter, num_pixels,
                 d_buffer_inference_inputs, d_buffer_throughput, 
                 !es_warmup, true
@@ -1026,7 +1026,7 @@ int main() {
 
             // Inferencia para imagen final
             mlp->inference(d_buffer_inference_inputs, d_buffer_radiance_predicha, num_pixels);
-            kernelComposite<<<gridSize, blockSize>>>(d_imagen_data, d_buffer_radiance_predicha, d_buffer_throughput, ancho_imagen, alto_imagen);
+            launchKernelComposite(gridSize, blockSize, d_imagen_data, d_buffer_radiance_predicha, d_buffer_throughput, ancho_imagen, alto_imagen);
 
             // ===================== Entrenamiento (BOOTSTRAPPING) =========================
             unsigned int n_train_host = 0; // Variable para almacenar el número de datos válidos para entrenamiento
@@ -1045,31 +1045,19 @@ int main() {
                 int blocks = (n_train_host + threads - 1) / threads;
 
                 // Preparar Tail e Inferir
-                kernelPrepararInferenciaTail<<<blocks, threads>>>(d_buffer_registros_raw, d_buffer_tail_inputs, n_train_host);
+                launchKernelPrepararInferenciaTail(dim3(blocks), dim3(threads), d_buffer_registros_raw, d_buffer_tail_inputs, n_train_host);
                 mlp->inference(d_buffer_tail_inputs, d_buffer_tail_predicha, n_train_host);
                 
                 // Calcular Targets Finales (Sufijo + Predicción)
-                kernelCalcularTargets<<<blocks, threads>>>(d_buffer_registros_raw, d_buffer_tail_predicha, d_buffer_train_final, n_train_host);
+                launchKernelCalcularTargets(dim3(blocks), dim3(threads), d_buffer_registros_raw, d_buffer_tail_predicha, d_buffer_train_final, n_train_host);
                 
-                // Shuffle con curand
-                kernelShuffle<<<blocks, threads>>>(
-                    d_buffer_train_final, 
-                    d_buffer_train_shuffled, 
-                    n_train_host,
-                    rand_states
-                );
-                cudaDeviceSynchronize(); // Asegurar que el shuffle termine antes de entrenar
+                cudaDeviceSynchronize();
+                    
+                runtime_state.trainingLoss = mlp->train_step(d_buffer_train_final, n_train_host);
                 
-                // Distribuir sobre los 's' batches de 'l' datos cada uno
-                for(int k = 0; k < s_batches; k++) {
-                    // Desplazamos el puntero para coger un trozo distinto del array mezclado
-                    DatosMLP* batch_ptr = d_buffer_train_shuffled + (k * l_records_per_batch);
-                    
-                    float loss = mlp->train_step(batch_ptr, l_records_per_batch);
-                    
-                    // Guardar loss
-                    if (k == 0) loss_file << loss << endl; 
-                }    
+                // Guardar loss
+                loss_file << runtime_state.trainingLoss << endl; 
+                 
             }
             // ==============================================================================
 
@@ -1081,9 +1069,19 @@ int main() {
                 frames_acumulados_reales++;
                 cudaMemcpy(frame_cpu.data(), d_imagen_data, num_pixels * sizeof(Color), cudaMemcpyDeviceToHost);
                 for(int i=0; i < num_pixels; i++) acumulador_cpu[i] = acumulador_cpu[i] + frame_cpu[i];
-                
-                if (s % 2 == 0) ventana.actualizar(acumulador_cpu, frames_acumulados_reales);
+
+                auto frame_fin = chrono::high_resolution_clock::now();
+                runtime_state.lastFrameMs = chrono::duration<float, std::milli>(frame_fin - frame_inicio).count();
+                runtime_state.totalRenderMs = chrono::duration<float, std::milli>(frame_fin - render_inicio).count();
+
+                if (s % 2 == 0) ventana->actualizar(acumulador_cpu, frames_acumulados_reales);
+            } else {
+                // Mantener UI viva durante el warmup (solo entrenamiento)
+                if (s % 2 == 0) ventana->actualizar(acumulador_cpu, 1);
             }
+
+            auto sample_fin = chrono::high_resolution_clock::now();
+            runtime_state.totalExecutionMs = chrono::duration<float, std::milli>(sample_fin - inicio).count();
 
             const char* fase = es_warmup ? "WARMUP" : "TRAIN+INFER";
             cout << "\rSample: " << (es_warmup ? s : frames_acumulados_reales) 
@@ -1093,19 +1091,20 @@ int main() {
 
         auto fin = chrono::high_resolution_clock::now();
         auto duracion = chrono::duration_cast<chrono::milliseconds>(fin - inicio);
+        auto duracion_render = chrono::duration_cast<chrono::milliseconds>(fin - render_inicio);
+        runtime_state.totalRenderMs = duracion_render.count();
+        runtime_state.totalExecutionMs = duracion.count();
 
         cout << "\n=================================================" << endl;
         cout << "====         PATH TRACING COMPLETADO         ====" << endl;
         cout << "=================================================" << endl;
         cout << "Tiempo de renderizado GPU: " << duracion.count() << " ms" << endl;
         loss_file.close();
-        mlp->save_model("mlp_model.json");
+        if(runtime_state.saveMlpModel) {
+            mlp->save_model("mlp_model.json");
+        }
 
-        cout << "\n==============================================" << endl;
-        cout << "====         GUARDANDO RESULTADOS         ====" << endl;
-        cout << "==============================================" << endl;
-
-        // Copiar datos de GPU a la imagen
+        // Preparar imagen final
         Imagen imagenCPU(ancho_imagen, alto_imagen);
         float inv_samples = 1.0f / (float)frames_acumulados_reales;
         for (int i = 0; i < ancho_imagen * alto_imagen; i++) {
@@ -1115,12 +1114,35 @@ int main() {
         // Aplicar tone mapping
         Imagen imagen_final = imagenCPU.filmic();
 
-        // Guardar imagen
-        if (guardarPNG(imagen_final, nombre_archivo.c_str())) {
-            cout << "Imagen guardada como: " << nombre_archivo << endl;
+        cout << "\n=================================================" << endl;
+        cout << "====      RENDERIZADO FINALIZADO - ESPERANDO ====" << endl;
+        cout << "=================================================" << endl;
+
+        // Mantener el render visible y decidir guardado desde la propia UI
+        RenderGuiState& post_state = ventana->uiState();
+        post_state = runtime_state;
+        post_state.accumulatedSamples = frames_acumulados_reales;
+        post_state.warmupActive = false;
+        post_state.pauseRendering = true;
+        post_state.renderingComplete = true;
+        post_state.requestSave = false;
+
+        while (post_state.renderingComplete && ventana->procesarEventos()) {
+            int muestras_gui = frames_acumulados_reales > 0 ? frames_acumulados_reales : 1;
+            ventana->actualizar(acumulador_cpu, muestras_gui);
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        }
+
+        // Guardar imagen si el usuario lo solicitó
+        if (post_state.requestSave) {
+            nombre_archivo = runtime_state.outputFileName;
+            if (guardarPNG(imagen_final, nombre_archivo.c_str())) {
+                cout << "Imagen guardada como: " << nombre_archivo << endl;
+            } else {
+                cout << "Error al guardar la imagen" << endl;
+            }
         } else {
-            cout << "Error al guardar la imagen" << endl;
-            return 1;
+            cout << "Imagen no guardada." << endl;
         }
 
         // Limpiar recursos GPU
@@ -1135,7 +1157,7 @@ int main() {
         cudaFree(d_buffer_tail_inputs);
         cudaFree(d_buffer_tail_predicha);
         cudaFree(d_buffer_train_shuffled);
-        limpiarGPU(d_primitivas, d_luces, rand_states);
+        limpiarGPU(d_primitivas, d_luces);
         
     } catch (const exception& e) {
         cerr << "ERROR: " << e.what() << endl;

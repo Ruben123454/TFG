@@ -1,51 +1,109 @@
 #ifndef VISUALIZADOR_H
 #define VISUALIZADOR_H
 
-#include <SDL2/SDL.h>
+#include <KHR/glad.h>
+#include <GLFW/glfw3.h>
+#include "imgui.h"
 #include <vector>
 #include <iostream>
+#include <algorithm>
+#include <stdexcept>
 #include "color.h"
+#include "GuiLayer.h"
 
 class Visualizador {
+public:
+    GLFWwindow* window = nullptr;
+    GuiLayer gui;
+
 private:
-    SDL_Window* window = nullptr;
-    SDL_Renderer* renderer = nullptr;
-    SDL_Texture* texture = nullptr;
+    GLuint texture = 0;
     std::vector<uint32_t> pixel_buffer;
+    RenderGuiState gui_state;
     int width, height;
+    bool running = true;
 
 public:
     Visualizador(int w, int h, const char* titulo) : width(w), height(h) {
-        if (SDL_Init(SDL_INIT_VIDEO) < 0) {
-            std::cerr << "Error SDL: " << SDL_GetError() << std::endl;
-            return;
+        if (!glfwInit()) {
+            throw std::runtime_error("No se pudo inicializar GLFW");
         }
 
-        window = SDL_CreateWindow(titulo, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                  width, height, SDL_WINDOW_SHOWN);
-        
-        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-        
-        texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, 
-                                    SDL_TEXTUREACCESS_STREAMING, width, height);
-        
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+        glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
+
+        window = glfwCreateWindow(width, height, titulo, nullptr, nullptr);
+        if (!window) {
+            glfwTerminate();
+            throw std::runtime_error("No se pudo crear la ventana GLFW");
+        }
+
+        glfwMaximizeWindow(window);
+
+        glfwMakeContextCurrent(window);
+        glfwSwapInterval(1);
+
+        if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+            glfwDestroyWindow(window);
+            glfwTerminate();
+            throw std::runtime_error("No se pudo inicializar GLAD");
+        }
+
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+
         pixel_buffer.resize(width * height);
+
+        if (!gui.init(window, "#version 330")) {
+            throw std::runtime_error("No se pudo inicializar ImGui");
+        }
+    }
+
+    void configurarRenderTarget(int renderWidth, int renderHeight, const char* titulo = nullptr) {
+        width = std::max(1, renderWidth);
+        height = std::max(1, renderHeight);
+
+        pixel_buffer.assign(width * height, 0u);
+
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+
+        if (titulo != nullptr) {
+            glfwSetWindowTitle(window, titulo);
+        }
     }
 
     ~Visualizador() {
-        SDL_DestroyTexture(texture);
-        SDL_DestroyRenderer(renderer);
-        SDL_DestroyWindow(window);
-        SDL_Quit();
+        gui.shutdown();
+
+        if (texture != 0) {
+            glDeleteTextures(1, &texture);
+            texture = 0;
+        }
+
+        if (window) {
+            glfwDestroyWindow(window);
+            window = nullptr;
+        }
+
+        glfwTerminate();
     }
 
     bool procesarEventos() {
-        SDL_Event e;
-        while (SDL_PollEvent(&e)) {
-            if (e.type == SDL_QUIT) return false;
-            if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE) return false;
-        }
-        return true;
+        glfwPollEvents();
+        running = !glfwWindowShouldClose(window);
+        return running;
+    }
+
+    RenderGuiState& uiState() {
+        return gui_state;
     }
 
     float acesFilmic(float x) const {
@@ -75,13 +133,51 @@ public:
             uint8_t ig = static_cast<uint8_t>(g * 255.0f);
             uint8_t ib = static_cast<uint8_t>(b * 255.0f);
 
-            pixel_buffer[i] = (255 << 24) | (ir << 16) | (ig << 8) | ib;
+            pixel_buffer[i] = (ir) | (ig << 8) | (ib << 16) | (255u << 24);
         }
 
-        SDL_UpdateTexture(texture, NULL, pixel_buffer.data(), width * sizeof(uint32_t));
-        SDL_RenderClear(renderer);
-        SDL_RenderCopy(renderer, texture, NULL, NULL);
-        SDL_RenderPresent(renderer);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixel_buffer.data());
+
+        gui_state.accumulatedSamples = muestras_actuales;
+
+        int fbw = 0, fbh = 0;
+        glfwGetFramebufferSize(window, &fbw, &fbh);
+
+        glViewport(0, 0, fbw, fbh);
+        glClearColor(0.08f, 0.08f, 0.10f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        gui.beginFrame();
+        gui.drawControls(gui_state);
+
+        ImGui::Begin("Render");
+        ImVec2 avail = ImGui::GetContentRegionAvail();
+        float sx = avail.x / static_cast<float>(width);
+        float sy = avail.y / static_cast<float>(height);
+        float scale = std::max(0.1f, std::min(sx, sy));
+        ImVec2 imageSize(width * scale, height * scale);
+        ImGui::Image((ImTextureID)(intptr_t)texture, imageSize, ImVec2(0, 0), ImVec2(1, 1));
+
+        if (gui_state.warmupActive) {
+            ImVec2 imageMin = ImGui::GetItemRectMin();
+            ImVec2 imageMax = ImGui::GetItemRectMax();
+            ImVec2 center((imageMin.x + imageMax.x) * 0.5f, (imageMin.y + imageMax.y) * 0.5f);
+
+            const char* warmupText = "WARM UP";
+            ImVec2 textSize = ImGui::CalcTextSize(warmupText);
+
+            ImDrawList* drawList = ImGui::GetWindowDrawList();
+            drawList->AddText(
+                ImVec2(center.x - textSize.x * 0.5f, center.y - textSize.y * 0.5f),
+                IM_COL32(255, 191, 64, 255),
+                warmupText
+            );
+        }
+        ImGui::End();
+
+        gui.endFrame(fbw, fbh);
+        glfwSwapBuffers(window);
     }
 };
 

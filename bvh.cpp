@@ -2,7 +2,7 @@
 // Autores: 
 // Mir Ramos, Rubén 869039
 //
-// bvh.cu
+// bvh.cpp
 // ################
 
 #include "bvh.h"

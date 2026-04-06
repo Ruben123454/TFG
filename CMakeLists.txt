@@ -51,17 +51,60 @@ set_target_properties(tiny-cuda-nn PROPERTIES
 # ----------------------------
 find_package(PNG REQUIRED)
 find_package(assimp REQUIRED)
-find_package(SDL2 REQUIRED)
+find_package(OpenGL REQUIRED)
+
+# GLFW instalado en el sistema (sin descargas automáticas)
+set(GLFW_TARGET "")
+find_package(glfw3 CONFIG QUIET)
+
+if(TARGET glfw)
+    set(GLFW_TARGET glfw)
+elseif(TARGET glfw3::glfw)
+    set(GLFW_TARGET glfw3::glfw)
+else()
+    set(GLFW_LOCAL_SRC "${CMAKE_BINARY_DIR}/_deps/glfw-src")
+    set(GLFW_LOCAL_BUILD "${CMAKE_BINARY_DIR}/_deps/glfw-build")
+
+    if(EXISTS "${GLFW_LOCAL_SRC}/CMakeLists.txt")
+        message(STATUS "Usando GLFW local en ${GLFW_LOCAL_SRC}")
+        set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+        set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        add_subdirectory("${GLFW_LOCAL_SRC}" "${GLFW_LOCAL_BUILD}")
+        set(GLFW_TARGET glfw)
+    else()
+        message(FATAL_ERROR
+            "No se encontró GLFW3 ni por CMake ni en build/_deps. "
+            "Instala libglfw3-dev o restaura la carpeta build/_deps/glfw-src.")
+    endif()
+endif()
 
 # ----------------------------
 # Ejecutable
 # ----------------------------
 add_executable(raytracer
-    main.cu
-    bvh.cu
-    mlp.cu
+    main.cpp
+    RenderKernel.cu
+    NrcKernel.cu
+    bvh.cpp
+    mlp.cpp
     tinybvh_wrapper.cpp
 )
+
+add_library(raytracer_ui STATIC
+    GuiLayer.cpp
+    glad.c
+    imgui_src/imgui.cpp
+    imgui_src/imgui_draw.cpp
+    imgui_src/imgui_tables.cpp
+    imgui_src/imgui_widgets.cpp
+    imgui_src/imgui_impl_glfw.cpp
+    imgui_src/imgui_impl_opengl3.cpp
+)
+
+set_source_files_properties(glad.c PROPERTIES LANGUAGE CXX)
+
+set_source_files_properties(main.cpp mlp.cpp PROPERTIES LANGUAGE CUDA)
 
 # ----------------------------
 # Enlace y Propiedades
@@ -71,14 +114,30 @@ target_link_libraries(raytracer
     tiny-cuda-nn
     PNG::PNG
     assimp::assimp
-    ${SDL2_LIBRARIES}
+    raytracer_ui
+)
+
+target_compile_definitions(raytracer_ui PRIVATE IMGUI_IMPL_OPENGL_LOADER_CUSTOM)
+
+target_link_libraries(raytracer_ui
+    PUBLIC
+    OpenGL::GL
+    ${GLFW_TARGET}
 )
 
 target_include_directories(raytracer PRIVATE
     ${PNG_INCLUDE_DIRS}
     ${ASSIMP_INCLUDE_DIRS}
-    ${SDL2_INCLUDE_DIRS}
     "${TCNN_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/imgui"
+    "${CMAKE_CURRENT_SOURCE_DIR}/imgui_src"
+)
+
+target_include_directories(raytracer_ui PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/imgui"
+    "${CMAKE_CURRENT_SOURCE_DIR}/imgui_src"
 )
 
 set_target_properties(raytracer PROPERTIES

@@ -73,6 +73,10 @@ public:
         return num_nodos; 
     }
 
+    HOST_DEVICE int getNumPrimitivas() const { 
+        return num_primitivas; 
+    }
+
     // Print info del BVH
     HOST_DEVICE void obtenerInfo() const;
 };

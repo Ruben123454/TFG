@@ -14,48 +14,16 @@
 #include <thread>
 #include <chrono>
 #include <cuda_runtime.h>
-#include <curand_kernel.h>
 #include "mlp.h"
 #include "mlp_types.h"
 #include "imagen_gpu.h"
 #include "camara.h"
-#include "render.h"
+#include "RenderKernel.h"
 
 using std::cout;
 using std::endl;
 using std::vector;
 using std::flush;
-
-// Forward declarations
-curandState* inicializarEstadosAleatorios(int ancho, int alto);
-
-__global__ void kernelRender(const Camara* camara, const Primitiva* primitivas, int num_primitivas, const LuzPuntual* luces, int num_luces,
-                            const Primitiva* primitivas_malla, int num_primitivas_malla, int ancho_img, int alto_img, int samples_per_pixel, 
-                            const NodoBVH* nodos_bvh, const Primitiva* primitivas_bvh, int num_nodos_bvh, 
-                            ImagenGPU imagen_directa,
-                            curandState* rand_states, 
-                            unsigned int* dev_counter, RegistroEntrenamiento* buffer_registros, unsigned int* counter_train, int max_cap_train,
-                            DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red);
-
-__global__ void kernelCalcularTargets(
-    RegistroEntrenamiento* buffer_registros, 
-    Color* buffer_prediccion_tail,
-    DatosMLP* buffer_training_final,
-    int num_elementos
-);
-
-__global__ void kernelPrepararInferenciaTail(
-    const RegistroEntrenamiento* __restrict__ source_registros,
-    DatosMLP* __restrict__ dest_inference_inputs,
-    int num_elements
-);
-
-__global__ void kernelShuffle(
-    const DatosMLP* __restrict__ input_data,
-    DatosMLP* __restrict__ shuffled_data,
-    unsigned int num_elements,
-    curandState* __restrict__ rand_states
-);
 
 // Estructura para almacenar hiperparámetros probados
 struct Hyperparams {
@@ -103,7 +71,6 @@ tcnn::json ejecutarGridSearch(
     // Buffers para renderizado
     Color* d_img; cudaMalloc(&d_img, num_pixels * sizeof(Color));
     ImagenGPU img_gpu(ancho, alto, d_img);
-    curandState* d_rand = inicializarEstadosAleatorios(ancho, alto);
     
     // Buffers para inferencia
     DatosMLP* d_infer; cudaMalloc(&d_infer, num_pixels * sizeof(DatosMLP));
@@ -208,11 +175,11 @@ tcnn::json ejecutarGridSearch(
 
                         // Renderizado con bootstrapping
                         // Grid Search: 100% entrenamiento (como warmup)
-                        kernelRender<<<grid, block>>>(
+                        launchKernelRender(grid, block,
                             camara, d_primitivas, n_prims, d_luces, n_luces, 
-                            d_malla, n_malla, ancho, alto, 1, 
+                            d_malla, n_malla, ancho, alto, 1, 0,
                             d_nodos, d_prims_bvh, n_nodos_bvh, 
-                            img_gpu, d_rand, 
+                            img_gpu, 
                             nullptr, d_registros, d_counter, num_pixels, 
                             d_infer, d_throu, false, true);
                         cudaDeviceSynchronize();
@@ -226,28 +193,15 @@ tcnn::json ejecutarGridSearch(
                             int blocks_1d = (n_valid + threads - 1) / threads;
                             
                             // Bootstrapping: Preparar tail -> Inferir -> Calcular targets
-                            kernelPrepararInferenciaTail<<<blocks_1d, threads>>>(d_registros, d_tail_inputs, n_valid);
+                            launchKernelPrepararInferenciaTail(dim3(blocks_1d), dim3(threads), d_registros, d_tail_inputs, n_valid);
                             mlp->inference(d_tail_inputs, d_tail_pred, n_valid);
-                            kernelCalcularTargets<<<blocks_1d, threads>>>(d_registros, d_tail_pred, d_train_final, n_valid);
-                            
-                            // Shuffle
-                            kernelShuffle<<<blocks_1d, threads>>>(
-                                d_train_final, 
-                                d_train_final,
-                                n_valid,
-                                d_rand
-                            );
+                            launchKernelCalcularTargets(dim3(blocks_1d), dim3(threads), d_registros, d_tail_pred, d_train_final, n_valid);
+
                             cudaDeviceSynchronize();
                             
-                            // Dividir en 4 batches
-                            int s_batches = 4;
-                            int l_records_per_batch = (n_valid / s_batches) * s_batches / 4;
-                            
                             float current_loss = 0.0f;
-                            for(int k = 0; k < s_batches; k++) {
-                                DatosMLP* batch_ptr = d_train_final + (k * l_records_per_batch);
-                                current_loss = mlp->train_step(batch_ptr, l_records_per_batch);
-                            }
+                            current_loss = mlp->train_step(d_train_final, n_valid);
+                            
 
                             if (f >= 10) {
                                 total_loss += current_loss;
@@ -284,7 +238,7 @@ tcnn::json ejecutarGridSearch(
     // Liberar buffers
     cudaFree(d_img); cudaFree(d_infer); cudaFree(d_throu);
     cudaFree(d_registros); cudaFree(d_train_final); cudaFree(d_tail_inputs); cudaFree(d_tail_pred);
-    cudaFree(d_counter); cudaFree(d_rand);
+    cudaFree(d_counter);
 
     tcnn::free_gpu_memory_arena(0);
     tcnn::free_all_gpu_memory_arenas();

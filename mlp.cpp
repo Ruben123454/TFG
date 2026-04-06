@@ -2,159 +2,16 @@
 // Autores: 
 // Mir Ramos, Rubén 869039
 //
-// mlp.cu
+// mlp.cpp
 // ################
 
 #include "mlp.h"
-#include <curand_kernel.h>
 #include <iostream>
 #include <fstream>
 #include "vector3d.h"
+#include "NrcKernel.h"
 
 using namespace tcnn;
-
-__device__ float ESCALA = 0.05f;
-
-// Modifica escala para que sea dinámico basado en la escena
-__device__ float normalize_coord(float val, float min, float max) {
-    float normalized = (val - min) / (max - min);
-    return fminf(fmaxf(normalized, 0.0f), 1.0f);
-}
-
-__global__ void generarIndicesAleatorios(int* indices, int max_range, int count, unsigned int seed) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < count) {
-        curandState state;
-        curand_init(seed, idx, 0, &state);
-        
-        indices[idx] = curand(&state) % max_range;
-    }
-}
-
-__global__ void prepararDatosEntrenamiento(const DatosMLP* __restrict__ buffer, 
-                                        const int* __restrict__ indices_aleatorios,
-                                        int batch_size,
-                                        int n_in,
-                                        int n_out,
-                                        SceneBounds bounds,
-                                        float* __restrict__ input_matrix,
-                                        float* __restrict__ target_matrix) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= batch_size) return;
-
-    int sample_idx = indices_aleatorios[idx];
-    DatosMLP d = buffer[sample_idx];
-    
-    int base_in = idx * n_in;
-
-    // Posicion (3 dims)
-    input_matrix[base_in + 0] = normalize_coord(d.posicion.x, bounds.min.x, bounds.max.x);
-    input_matrix[base_in + 1] = normalize_coord(d.posicion.y, bounds.min.y, bounds.max.y);
-    input_matrix[base_in + 2] = normalize_coord(d.posicion.z, bounds.min.z, bounds.max.z);
-    
-    // Direccion (3 dims)
-    input_matrix[base_in + 3] = d.direccion.x;
-    input_matrix[base_in + 4] = d.direccion.y;
-    input_matrix[base_in + 5] = d.direccion.z;
-
-
-    // Normal (3 dims)
-    input_matrix[base_in + 6] = d.normal.x;
-    input_matrix[base_in + 7] = d.normal.y;
-    input_matrix[base_in + 8] = d.normal.z;
-
-    // Albedos (6 dims)
-    input_matrix[base_in + 9] = d.difuso.r;
-    input_matrix[base_in + 10] = d.difuso.g;
-    input_matrix[base_in + 11] = d.difuso.b;
-
-    input_matrix[base_in + 12] = d.especular.r;
-    input_matrix[base_in + 13] = d.especular.g;
-    input_matrix[base_in + 14] = d.especular.b;
-
-    // Target (3 dims)
-    int base_out = idx * n_out;
-    
-    float r = d.color.r;
-    float g = d.color.g;
-    float b = d.color.b;
-
-    float max_val = 100000.0f; 
-    if (r > max_val) r = max_val;
-    if (g > max_val) g = max_val;
-    if (b > max_val) b = max_val;
-
-    target_matrix[base_out + 0] = r;
-    target_matrix[base_out + 1] = g;
-    target_matrix[base_out + 2] = b;
-}
-
-__global__ void prepararDatosInferencia(const DatosMLP* datos, uint32_t n_elements, uint32_t n_in, float* buffer_in, SceneBounds bounds) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n_elements) return;
-
-    const DatosMLP& d = datos[idx];
-    
-    int base = idx * n_in;
-
-    // Posición (3 dims)
-    buffer_in[base + 0] = normalize_coord(d.posicion.x, bounds.min.x, bounds.max.x);
-    buffer_in[base + 1] = normalize_coord(d.posicion.y, bounds.min.y, bounds.max.y);
-    buffer_in[base + 2] = normalize_coord(d.posicion.z, bounds.min.z, bounds.max.z);
-
-    // Direccion (3 dims)
-    buffer_in[base + 3] = d.direccion.x;
-    buffer_in[base + 4] = d.direccion.y;
-    buffer_in[base + 5] = d.direccion.z;
-
-    // Normal (3 dims)
-    buffer_in[base + 6] = d.normal.x;
-    buffer_in[base + 7] = d.normal.y;
-    buffer_in[base + 8] = d.normal.z;
-
-
-    // Difuso (3 dims)
-    buffer_in[base + 9]  = d.difuso.r;
-    buffer_in[base + 10] = d.difuso.g;
-    buffer_in[base + 11] = d.difuso.b;
-
-    // Especular (3 dims)
-    buffer_in[base + 12] = d.especular.r;
-    buffer_in[base + 13] = d.especular.g;
-    buffer_in[base + 14] = d.especular.b;
-} 
-
-__global__ void guardarSalidaInferencia(float* network_output, Color* buffer_color, int n_elements) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n_elements) return;
-
-    int base = idx * 3;
-
-    float r = network_output[base + 0];
-    float g = network_output[base + 1];
-    float b = network_output[base + 2];
-
-    // Evitar negativos
-    if (r < 0.0f) r = 0.0f;
-    if (g < 0.0f) g = 0.0f;
-    if (b < 0.0f) b = 0.0f;
-
-    // Evitar NaNs
-    if (isnan(r)) r = 0.0f;
-    if (isnan(g)) g = 0.0f;
-    if (isnan(b)) b = 0.0f;
-
-    // Evitar Infinitos
-    float max_val = 100000.0f;
-    if (r > max_val) r = max_val; 
-    if (g > max_val) g = max_val;
-    if (b > max_val) b = max_val;
-    if (isinf(r)) r = max_val;
-    if (isinf(g)) g = max_val;
-    if (isinf(b)) b = max_val;
-
-    buffer_color[idx] = Color(r, g, b);
-}
 
 ColorMLP::ColorMLP(uint32_t n_in, uint32_t n_out, uint32_t batch, tcnn::json config_override) 
     : n_input_dims(n_in), n_output_dims(n_out), batch_size(batch) 
@@ -242,12 +99,12 @@ float ColorMLP::train_step(DatosMLP* buffer_samples_gpu, uint32_t n_total_sample
     int num_blocks = (batch_size + 255) / 256;
     
     // Generar índices aleatorios
-    generarIndicesAleatorios<<<num_blocks, 256, 0, stream>>>(
+    launchGenerarIndicesAleatorios(num_blocks, 256, stream,
         d_indices_random, (int)n_total_samples_disponibles, (int)batch_size, step_counter++
     );
 
     // Preparar datos de entrada para entrenamiento
-    prepararDatosEntrenamiento<<<num_blocks, 256, 0, stream>>>(
+    launchPrepararDatosEntrenamiento(num_blocks, 256, stream,
         buffer_samples_gpu,
         d_indices_random,
         (int)batch_size,
@@ -291,7 +148,7 @@ void ColorMLP::inference(DatosMLP* buffer_samples_gpu, Color* output_gpu, uint32
     int num_blocks = (n_samples + 255) / 256;
 
     // Preparar datos de entrada para inferencia
-    prepararDatosInferencia<<<num_blocks, 256, 0, stream>>>(
+    launchPrepararDatosInferencia(num_blocks, 256, stream,
         buffer_samples_gpu,
         n_samples,
         n_input_dims,
@@ -303,7 +160,7 @@ void ColorMLP::inference(DatosMLP* buffer_samples_gpu, Color* output_gpu, uint32
     model.network->inference(stream, inference_inputs, inference_outputs);
 
     // Procesar y guardar salida
-    guardarSalidaInferencia<<<num_blocks, 256, 0, stream>>>(
+    launchGuardarSalidaInferencia(num_blocks, 256, stream,
         inference_outputs.data(),
         output_gpu,
         n_samples
