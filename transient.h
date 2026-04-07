@@ -14,6 +14,8 @@
 #include <iostream>
 #include <cmath>
 
+using namespace std;
+
 class TransientRender {
 public:
     Color* d_datos;

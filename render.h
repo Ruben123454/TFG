@@ -9,13 +9,13 @@
 #define RENDER
 
 #include <cuda_runtime.h>
-#include <curand_kernel.h>
 #include "camara.h"
 #include "escenario.h"
 #include "imagen_gpu.h"
 #include "color.h"
 #include "primitiva.h"
 #include "mlp_types.h"
+#include "rng.h"
 
 const float pi = 3.14159265358979323846f;
 
@@ -30,9 +30,10 @@ public:
     __device__ Render(double rr = 0.9, int spp = 100) : 
                             russian_roulette_prob(rr), samples_per_pixel(spp) {}
 
-    __device__ Color lanzarRayoIterativo(const Rayo& r_inicial, const Escenario& escena, curandState* rand_state, int px, int py, int sample_idx, TransientRender& transientRenderer, 
+    __device__ Color lanzarRayoIterativo(const Rayo& r_inicial, const Escenario& escena, uint32_t& rng_seed, int px, int py, int sample_idx, TransientRender& transientRenderer, 
                                     RegistroEntrenamiento& registro_train, bool& guardar_train,
-                                    DatosMLP& datos_inf, Color& throughput_inf, bool& necesita_inf, bool es_ruta_entrenamiento, bool usar_red_inferencia) {
+                                    DatosMLP& datos_inf, Color& throughput_inf, bool& necesita_inf, bool es_ruta_entrenamiento, bool usar_red_inferencia,
+                                    bool modo_reconstruccion) {
         Color color(0, 0, 0);
         Color camino(1, 1, 1); 
         Rayo rayo_actual = r_inicial;
@@ -62,7 +63,7 @@ public:
 
         int max_depth_actual = 20;
 
-        bool es_ruta_insesgada = es_ruta_entrenamiento && (curand_uniform(rand_state) < 0.0625f);
+        bool es_ruta_insesgada = es_ruta_entrenamiento && (pcg32_float(rng_seed) < 0.0625f);
 
         double tiempo_acumulado_NEE = 0.0; // Tiempo acumulado solo para NEE (iluminación directa)
         double tiempo_camara_head = 0.0;
@@ -140,7 +141,7 @@ public:
                 }
 
                 // NEE (Luz Directa)
-                if(es_difuso) {
+                if(es_difuso && !modo_reconstruccion) {
                     Vector3d punto_sombra = punto_interseccion + normal * EPSILON;
                     bool depositar_transient_nee = !(es_ruta_entrenamiento && punto_entrenamiento_encontrado);
                     Color L_dir = escena.calcularLuzDirecta(punto_interseccion, normal, primitiva_intersectada, 
@@ -193,7 +194,7 @@ public:
                 }
 
                 // Decidir si el rebote actual es parte del sufijo de entrenamiento o no, y capturar datos para la inferencia
-                if(es_difuso && !es_especular && footprint_suficiente) {
+                if((es_difuso && !es_especular && footprint_suficiente) || modo_reconstruccion) {
                     Color reflectancia = primitiva_intersectada->difuso + primitiva_intersectada->especular + primitiva_intersectada->transmision;
                     float min_refl = 1e-3f; 
                     reflectancia.r = fmaxf(reflectancia.r, min_refl);
@@ -217,7 +218,7 @@ public:
                         double dt_bin = (t_final - t_start) / (double)num_bins_t;
                         unsigned int pixel_hash = (unsigned int)(px * 73856093u) ^ (unsigned int)(py * 19349663u);
                         int bin_idx = (sample_idx + (int)(pixel_hash % (unsigned int)num_bins_t)) % num_bins_t;
-                        float jitter = curand_uniform(rand_state); // jitter intra-bin en [0,1)
+                        float jitter = pcg32_float(rng_seed); // jitter intra-bin en [0,1)
                         double T_target = t_start + ((double)bin_idx + (double)jitter) * dt_bin;
 
                         // Evitar salir por redondeo en el último bin
@@ -254,6 +255,9 @@ public:
                             // En este instante T_target sorteado, la luz aún no ha llegado físicamente aquí.
                             necesita_inf = false;
                         }
+                        if(modo_reconstruccion){
+                            return color;
+                        }
                         break;
                     } else if (es_ruta_entrenamiento && !punto_entrenamiento_encontrado) { // Capturar datos para entrenamiento
                         tiempo_camara_head = tiempo_acumulado;
@@ -271,14 +275,14 @@ public:
                 }
 
                 // Luz indirecta
-                calcularLuzIndirecta(rand_state, rayo_actual, camino, r_inicial, 
+                calcularLuzIndirecta(rng_seed, rayo_actual, camino, r_inicial, 
                                 punto_interseccion, normal, primitiva_intersectada, current_ior, pdf_ultimo_rebote, ultimo_fue_especular);
 
                 // Ruleta rusa
                 if(profundidad > 10) {
                     double prob = fmax(camino.r, fmax(camino.g, camino.b));
                     if (prob > 0.95) prob = 0.95;
-                    if (curand_uniform(rand_state) > prob) {
+                    if (pcg32_float(rng_seed) > prob) {
                         // Si estábamos en medio del sufijo, registramos el fin del rayo
                         if (es_ruta_entrenamiento && punto_entrenamiento_encontrado) {
                             // Tiempo desde la luz hasta el tail
@@ -348,7 +352,7 @@ public:
         return color;
     }
 
-    __device__ void calcularLuzIndirecta(curandState* rand_state, Rayo& rayo_actual, Color& camino, const Rayo& r_inicial, 
+    __device__ void calcularLuzIndirecta(uint32_t& rng_seed, Rayo& rayo_actual, Color& camino, const Rayo& r_inicial, 
                                  const Vector3d& punto_interseccion, const Vector3d& normal,
                                  const Primitiva* primitiva_intersectada, double& current_ior, float& pdf_salida, bool& ultimo_fue_especular) {
 
@@ -370,14 +374,14 @@ public:
         double p_especular = max_ks / suma_max;
         double p_transmision = 1 - p_difuso - p_especular;
 
-        double rand_brdf = curand_uniform(rand_state);
+        double rand_brdf = pcg32_float(rng_seed);
         
         if (rand_brdf < p_difuso) {
             // Actualizar camino
             camino = camino * k_d / p_difuso;
 
             // Muestrear dirección en el hemisferio usando distribución cosenoidal
-            Vector3d wi_local = muestrearCosenoUniforme(rand_state);
+            Vector3d wi_local = muestrearCosenoUniforme(rng_seed);
 
             // Asegurar que la dirección muestreada está en el hemisferio correcto
             while(wi_local.z <= EPSILON) {
@@ -463,9 +467,9 @@ public:
     }
 
     // Generar direcciones aleatorias en el hemisferio con distribución cosenoidal
-    __device__ Vector3d muestrearCosenoUniforme(curandState* rand_state) {
-        double r1 = curand_uniform(rand_state);  // para angulo azimutal
-        double r2 = curand_uniform(rand_state);  // para angulo polar
+    __device__ Vector3d muestrearCosenoUniforme(uint32_t& rng_seed) {
+        double r1 = pcg32_float(rng_seed);  // para angulo azimutal
+        double r2 = pcg32_float(rng_seed);  // para angulo polar
 
         // Coordenadas esféricas con distribución cosenoidal
         double phi = 2 * M_PI * r1; // angulo azimutal
@@ -502,31 +506,21 @@ public:
     // Método de renderizado para GPU
     __device__ void renderizar(const Camara& camara, const Escenario& escena, 
                               int ancho_img, int alto_img, int x, int y, ImagenGPU& imagen, TransientRender& transientRenderer,
-                              curandState* rand_states, 
+                              int frame_number, 
                               // Datos para entrenamiento
                               unsigned int* dev_counter, 
                               RegistroEntrenamiento* buffer_training, unsigned int* counter_training, int max_cap_training,
                               // Datos para inferencia
-                              DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red, int sample_idx) {
+                              DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red,
+                              bool modo_reconstruccion) {
         
-
-        // Calcular ID global del thread para acceder a su estado aleatorio
-        int global_id = (blockIdx.y * gridDim.x + blockIdx.x) * (blockDim.x * blockDim.y) + 
-                        (threadIdx.y * blockDim.x + threadIdx.x);
-        int pixel_idx = y * ancho_img + x;
+        // Inicializar semilla RNG basada en píxel, frame y profundidad
+        uint32_t rng_seed = inicializarSemilla(x, y, frame_number);
 
         Color color_pixel(0, 0, 0);
         
-        curandState* rand_state = nullptr;
-        if (rand_states != nullptr) {
-            rand_state = &rand_states[global_id];
-        }
-
-        float offset_x = 0.5f, offset_y = 0.5f;
-        if (rand_state != nullptr) {
-            offset_x = curand_uniform(rand_state);
-            offset_y = curand_uniform(rand_state);
-        }
+        float offset_x = pcg32_float(rng_seed);
+        float offset_y = pcg32_float(rng_seed);
 
         Rayo rayo = camara.generarRayo(x, y, ancho_img, alto_img, offset_x, offset_y);
 
@@ -539,32 +533,28 @@ public:
         // Fase 1 (Warmup): entrenar_red=true, usar_red_inferencia=false → 100% entrenamiento
         // Fase 2 (Post-warmup a frame 80): entrenar_red=true, usar_red_inferencia=true → 3% entrena, 97% infiere
         // Fase 3 (Frame 80+): entrenar_red=false, usar_red_inferencia=true → 0% entrena, 100% infiere
-        bool es_training_pixel = entrenar_red ? (usar_red_inferencia ? (curand_uniform(rand_state) < 0.2f) : true) : false;
+        bool es_training_pixel = !modo_reconstruccion ? (entrenar_red ? (usar_red_inferencia ? (pcg32_float(rng_seed) < 0.2f) : true) : false) : false;
 
-        Color color = lanzarRayoIterativo(rayo, escena, rand_state, x, y, sample_idx, transientRenderer, 
+        Color color = lanzarRayoIterativo(rayo, escena, rng_seed, x, y, frame_number, transientRenderer,
                                             reg_train, guardar_train, 
-                                            datos_inferencia, throughput_inferencia, necesita_inferencia, es_training_pixel, usar_red_inferencia);
+                                            datos_inferencia, throughput_inferencia, necesita_inferencia, es_training_pixel, usar_red_inferencia, 
+                                            modo_reconstruccion);
 
         imagen.setPixel(x, y, color);
         
         // Guardar Datos Inferencia
         if (necesita_inferencia) {
-            buffer_inference[pixel_idx] = datos_inferencia;
-            buffer_throughput[pixel_idx] = throughput_inferencia;
+            buffer_inference[y * ancho_img + x] = datos_inferencia;
+            buffer_throughput[y * ancho_img + x] = throughput_inferencia;
         }
         else {
-            buffer_throughput[pixel_idx] = Color(0,0,0);
+            buffer_throughput[y * ancho_img + x] = Color(0,0,0);
         }
 
         // Guardar Datos Entrenamiento solo si es pixel de entrenamiento y se ha marcado para guardar
         if (es_training_pixel && guardar_train && counter_training != nullptr) {
             unsigned int idx = atomicAdd(counter_training, 1);
             buffer_training[idx % max_cap_training] = reg_train;
-        }
-        
-        // Incrementar contador de píxeles completados
-        if (dev_counter != nullptr) {
-            atomicAdd(dev_counter, 1u);
         }
     }
 };
