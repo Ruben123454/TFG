@@ -134,7 +134,7 @@ public:
                     }
 
                     // Solo depositar en transient si no estamos en el sufijo de una ruta de entrenamiento
-                    if (!(es_ruta_entrenamiento && punto_entrenamiento_encontrado)) {
+                    if (!modo_reconstruccion && !(es_ruta_entrenamiento && punto_entrenamiento_encontrado)) {
                         transientRenderer.agregarMuestra(px, py, tiempo_acumulado, contrib);
                     }
                     break;
@@ -256,7 +256,7 @@ public:
                             necesita_inf = false;
                         }
                         if(modo_reconstruccion){
-                            return color;
+                            return Color(0,0,0);
                         }
                         break;
                     } else if (es_ruta_entrenamiento && !punto_entrenamiento_encontrado) { // Capturar datos para entrenamiento

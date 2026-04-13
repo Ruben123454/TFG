@@ -8,6 +8,7 @@
 #include <iostream>
 #include <algorithm>
 #include <stdexcept>
+#include <cstdio>
 #include "color.h"
 #include "GuiLayer.h"
 
@@ -151,7 +152,19 @@ public:
         gui.beginFrame();
         gui.drawControls(gui_state);
 
-        ImGui::Begin("Render");
+        ImGui::Begin("Render", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+       static int render_autosize_frames = 0;
+        if (ImGui::IsWindowAppearing()) {
+            render_autosize_frames = 3;
+        }
+        if (render_autosize_frames > 0) {
+            ImVec2 content = ImGui::GetContentRegionAvail();
+            ImVec2 desired((float)width, (float)height);
+            ImVec2 delta(desired.x - content.x, desired.y - content.y);
+            ImVec2 winSize = ImGui::GetWindowSize();
+            ImGui::SetWindowSize(ImVec2(winSize.x + delta.x, winSize.y + delta.y), ImGuiCond_Always);
+            render_autosize_frames--;
+        }
         ImVec2 avail = ImGui::GetContentRegionAvail();
         float sx = avail.x / static_cast<float>(width);
         float sy = avail.y / static_cast<float>(height);
@@ -164,7 +177,12 @@ public:
             ImVec2 imageMax = ImGui::GetItemRectMax();
             ImVec2 center((imageMin.x + imageMax.x) * 0.5f, (imageMin.y + imageMax.y) * 0.5f);
 
-            const char* warmupText = "WARM UP";
+            char warmupText[64];
+            if (gui_state.warmupSamplesTotal > 0) {
+                std::snprintf(warmupText, sizeof(warmupText), "WARMUP %d/%d", gui_state.warmupSamplesDone, gui_state.warmupSamplesTotal);
+            } else {
+                std::snprintf(warmupText, sizeof(warmupText), "WARMUP");
+            }
             ImVec2 textSize = ImGui::CalcTextSize(warmupText);
 
             ImDrawList* drawList = ImGui::GetWindowDrawList();

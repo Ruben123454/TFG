@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.18)
 
-project(raytracer LANGUAGES CXX CUDA)
+project(raytracer LANGUAGES C CXX CUDA)
 
 # FORZAR ARQUITECTURA
 set(CMAKE_CUDA_ARCHITECTURES 89)
@@ -53,7 +53,7 @@ find_package(PNG REQUIRED)
 find_package(assimp REQUIRED)
 find_package(OpenGL REQUIRED)
 
-# GLFW instalado en el sistema (sin descargas automáticas)
+# GLFW instalado en el sistema
 set(GLFW_TARGET "")
 find_package(glfw3 CONFIG QUIET)
 

@@ -7,6 +7,8 @@
 #include <KHR/glad.h>
 #include <GLFW/glfw3.h>
 #include <cstring>
+#include <cstdio>
+#include <cfloat>
 
 bool GuiLayer::init(GLFWwindow* window, const char* glslVersion) {
 	if (initialized_ || window == nullptr) {

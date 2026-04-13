@@ -47,6 +47,8 @@ struct RenderGuiState {
 	float totalRenderMs = 0.0f;
 	float totalExecutionMs = 0.0f;
 	bool warmupActive = false;
+	int warmupSamplesDone = 0;
+	int warmupSamplesTotal = 0;
 	float trainingLoss = 0.0f;
 
 	// Ventanas auxiliares
