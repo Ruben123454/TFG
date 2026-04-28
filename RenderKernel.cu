@@ -3,6 +3,109 @@
 #include "render.h"
 #include "escenario.h"
 
+#include <cfloat>
+
+__device__ __forceinline__ float nrc_luminance(const Color& c) {
+    return 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b;
+}
+
+__global__ void kernelNrcDebugStats(
+    const Color* __restrict__ buffer_pt,
+    const Color* __restrict__ buffer_prediccion,
+    const Color* __restrict__ buffer_throughput,
+    int num_pixels,
+    int step,
+    NrcDebugStats* __restrict__ stats
+) {
+
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int pixelIdx = idx * step;
+    if (pixelIdx >= num_pixels) return;
+
+    Color pt = buffer_pt[pixelIdx];
+    Color pred = buffer_prediccion[pixelIdx];
+    Color th = buffer_throughput[pixelIdx];
+    Color contrib = th * pred;
+
+    bool pt_finite = isfinite(pt.r) && isfinite(pt.g) && isfinite(pt.b);
+    bool pred_finite = isfinite(pred.r) && isfinite(pred.g) && isfinite(pred.b);
+    bool th_finite = isfinite(th.r) && isfinite(th.g) && isfinite(th.b);
+    bool contrib_finite = isfinite(contrib.r) && isfinite(contrib.g) && isfinite(contrib.b);
+
+    atomicAdd((unsigned int*)&stats->sampled, 1u);
+
+    // PT pre-composite
+    if (!pt_finite) {
+        atomicAdd((unsigned int*)&stats->pt_naninf, 1u);
+    } else {
+        atomicAdd(&stats->pt_sum_r, pt.r);
+        atomicAdd(&stats->pt_sum_g, pt.g);
+        atomicAdd(&stats->pt_sum_b, pt.b);
+        atomicAdd(&stats->pt_sum_luma, nrc_luminance(pt));
+
+        atomicMin(&stats->pt_min_r_bits, __float_as_uint(pt.r));
+        atomicMin(&stats->pt_min_g_bits, __float_as_uint(pt.g));
+        atomicMin(&stats->pt_min_b_bits, __float_as_uint(pt.b));
+        atomicMax(&stats->pt_max_r_bits, __float_as_uint(pt.r));
+        atomicMax(&stats->pt_max_g_bits, __float_as_uint(pt.g));
+        atomicMax(&stats->pt_max_b_bits, __float_as_uint(pt.b));
+        if (pt.r > 0.0f || pt.g > 0.0f || pt.b > 0.0f) {
+            atomicAdd((unsigned int*)&stats->pt_nonzero, 1u);
+        }
+    }
+
+    // NaN/Inf agregado para NRC (si cualquiera no es finito)
+    if (!pred_finite || !th_finite || !contrib_finite) {
+        atomicAdd((unsigned int*)&stats->naninf_any, 1u);
+    }
+    
+    // Pred
+    if (pred_finite) {
+        atomicAdd(&stats->pred_sum_r, pred.r);
+        atomicAdd(&stats->pred_sum_g, pred.g);
+        atomicAdd(&stats->pred_sum_b, pred.b);
+        atomicMin(&stats->pred_min_r_bits, __float_as_uint(pred.r));
+        atomicMin(&stats->pred_min_g_bits, __float_as_uint(pred.g));
+        atomicMin(&stats->pred_min_b_bits, __float_as_uint(pred.b));
+        atomicMax(&stats->pred_max_r_bits, __float_as_uint(pred.r));
+        atomicMax(&stats->pred_max_g_bits, __float_as_uint(pred.g));
+        atomicMax(&stats->pred_max_b_bits, __float_as_uint(pred.b));
+    }
+
+    if (pred.r > 0.0f || pred.g > 0.0f || pred.b > 0.0f) {
+        atomicAdd((unsigned int*)&stats->pred_nonzero, 1u);
+    }
+
+    // Throughput
+    atomicAdd(&stats->th_sum_r, th.r);
+    atomicAdd(&stats->th_sum_g, th.g);
+    atomicAdd(&stats->th_sum_b, th.b);
+    atomicMin(&stats->th_min_r_bits, __float_as_uint(th.r));
+    atomicMin(&stats->th_min_g_bits, __float_as_uint(th.g));
+    atomicMin(&stats->th_min_b_bits, __float_as_uint(th.b));
+    atomicMax(&stats->th_max_r_bits, __float_as_uint(th.r));
+    atomicMax(&stats->th_max_g_bits, __float_as_uint(th.g));
+    atomicMax(&stats->th_max_b_bits, __float_as_uint(th.b));
+
+    // Contrib
+    if (contrib_finite) {
+        atomicAdd(&stats->contrib_sum_r, contrib.r);
+        atomicAdd(&stats->contrib_sum_g, contrib.g);
+        atomicAdd(&stats->contrib_sum_b, contrib.b);
+        atomicAdd(&stats->contrib_sum_luma, nrc_luminance(contrib));
+        atomicMin(&stats->contrib_min_r_bits, __float_as_uint(contrib.r));
+        atomicMin(&stats->contrib_min_g_bits, __float_as_uint(contrib.g));
+        atomicMin(&stats->contrib_min_b_bits, __float_as_uint(contrib.b));
+        atomicMax(&stats->contrib_max_r_bits, __float_as_uint(contrib.r));
+        atomicMax(&stats->contrib_max_g_bits, __float_as_uint(contrib.g));
+        atomicMax(&stats->contrib_max_b_bits, __float_as_uint(contrib.b));
+    }
+
+    if (contrib.r > 0.0f || contrib.g > 0.0f || contrib.b > 0.0f) {
+        atomicAdd((unsigned int*)&stats->contrib_nonzero, 1u);
+    }
+}
+
 __global__ void kernelRender(const Camara* camara, const Primitiva* primitivas, int num_primitivas, const LuzPuntual* luces, int num_luces,
                             const Primitiva* primitivas_malla, int num_primitivas_malla, int ancho_img, int alto_img, int samples_per_pixel, int frame_number,
                             const NodoBVH* nodos_bvh, const Primitiva* primitivas_bvh, int num_nodos_bvh,
@@ -164,7 +267,11 @@ __global__ void kernelCalcularTargets(
     d.normal = reg.head.normal;
     d.difuso = reg.head.difuso;
     d.especular = reg.head.especular;
-    d.color = target_final;
+    d.tiempo = reg.head.tiempo;
+
+    d.color.r = logf(1.0f + target_final.r);
+    d.color.g = logf(1.0f + target_final.g);
+    d.color.b = logf(1.0f + target_final.b);
 
     buffer_training_final[idx] = d;
 }
@@ -186,6 +293,7 @@ __global__ void kernelPrepararInferenciaTail(
     d.difuso = Color(0,0,0);
     d.especular = Color(0,0,0);
     d.color = Color(0,0,0);
+    d.tiempo = 0.0f;
 
     if (reg.valido) {
         d.posicion = reg.tail.posicion;
@@ -193,6 +301,7 @@ __global__ void kernelPrepararInferenciaTail(
         d.normal = reg.tail.normal;
         d.difuso = reg.tail.difuso;
         d.especular = reg.tail.especular;
+        d.tiempo = reg.tail.tiempo;
     }
 
     dest_inference_inputs[idx] = d;
@@ -275,4 +384,22 @@ void launchKernelPrepararInferenciaTail(dim3 gridSize, dim3 blockSize,
     kernelPrepararInferenciaTail<<<gridSize, blockSize>>>(
         source_registros, dest_inference_inputs, num_elements
     );
+}
+
+void launchKernelNrcDebugStats(dim3 gridSize, dim3 blockSize,
+    const Color* buffer_pt,
+    const Color* buffer_prediccion,
+    const Color* buffer_throughput,
+    int num_pixels,
+    int sample_count,
+    NrcDebugStats* d_stats) {
+    int safe_sample_count = sample_count;
+    if (safe_sample_count < 1) {
+        safe_sample_count = 1;
+    }
+    int step = num_pixels / safe_sample_count;
+    if (step < 1) {
+        step = 1;
+    }
+    kernelNrcDebugStats<<<gridSize, blockSize>>>(buffer_pt, buffer_prediccion, buffer_throughput, num_pixels, step, d_stats);
 }

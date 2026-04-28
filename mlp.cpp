@@ -29,21 +29,21 @@ ColorMLP::ColorMLP(uint32_t n_in, uint32_t n_out, uint32_t batch, tcnn::json con
                     //    {"n_frequencies", 12}
                     //},
                     {
-                        {"n_dims_to_encode", 3 /*4*/}, // Posición (3 dims) //+ Tiempo (1 dim) = 4 dims
+                        {"n_dims_to_encode", 4}, // Posición (3 dims) + Tiempo (1 dim) = 4 dims
                         {"otype", "HashGrid"},
                         {"n_levels", 16},
                         {"n_features_per_level", 2},
-                        {"log2_hashmap_size", 19},//23
+                        {"log2_hashmap_size", 21},//19
                         {"base_resolution", 16},
                         {"per_level_scale", 1.5}
                     },
-                    
+                    /*
                     {
                         {"otype", "Frequency"},
                         {"n_dims_to_encode", 1}, // Tiempo (1 dim)
-                        {"n_frequencies", 6}
+                        {"n_frequencies", 16}
                     },
-                    
+                    */
                     {
                         {"n_dims_to_encode", 6}, // Dirección (3) + Normal (3) = 6 dims
                         {"otype", "OneBlob"},
@@ -63,7 +63,7 @@ ColorMLP::ColorMLP(uint32_t n_in, uint32_t n_out, uint32_t batch, tcnn::json con
                 {"n_hidden_layers", 5}
             }},
             {"loss", {
-                {"otype", "SMAPE"},
+                {"otype", "L2"},
             }},
             {"optimizer", {
                 {"otype", "EMA"},
@@ -229,21 +229,21 @@ bool ColorMLP::load_model(const std::string& filename) {
                     //    {"n_frequencies", 12}
                     //},
                     {
-                        {"n_dims_to_encode", 3 /*4*/}, // Posición (3 dims) //+ Tiempo (1 dim) = 4 dims
+                        {"n_dims_to_encode", 4}, // Posición (3 dims) + Tiempo (1 dim) = 4 dims
                         {"otype", "HashGrid"},
                         {"n_levels", 16},
                         {"n_features_per_level", 2},
-                        {"log2_hashmap_size", 19},//23
+                        {"log2_hashmap_size", 21},
                         {"base_resolution", 16},
                         {"per_level_scale", 1.5}
                     },
-                    
+                    /*
                     {
                         {"otype", "Frequency"},
                         {"n_dims_to_encode", 1}, // Tiempo (1 dim)
-                        {"n_frequencies", 6}
+                        {"n_frequencies", 16}
                     },
-                    
+                    */
                     {
                         {"n_dims_to_encode", 6}, // Dirección (3) + Normal (3) = 6 dims
                         {"otype", "OneBlob"},
@@ -263,7 +263,7 @@ bool ColorMLP::load_model(const std::string& filename) {
                 {"n_hidden_layers", 5}
             }},
             {"loss", {
-                {"otype", "SMAPE"},
+                {"otype", "L2"},
             }},
             {"optimizer", {
                 {"otype", "EMA"},

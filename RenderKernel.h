@@ -12,6 +12,62 @@
 #include "tinybvh_wrapper.h"
 #include "mlp_types.h"
 
+// Debug stats para NRC (predicción, throughput y contribución)
+struct NrcDebugStats {
+    uint32_t sampled = 0;
+
+    // PT pre-composite
+    uint32_t pt_nonzero = 0;
+    uint32_t pt_naninf = 0;
+    float pt_sum_r = 0.0f;
+    float pt_sum_g = 0.0f;
+    float pt_sum_b = 0.0f;
+    uint32_t pt_min_r_bits = 0u;
+    uint32_t pt_min_g_bits = 0u;
+    uint32_t pt_min_b_bits = 0u;
+    uint32_t pt_max_r_bits = 0u;
+    uint32_t pt_max_g_bits = 0u;
+    uint32_t pt_max_b_bits = 0u;
+    float pt_sum_luma = 0.0f;
+
+    // NRC (solo píxeles activos: throughput > 0)
+    uint32_t active = 0;
+    uint32_t naninf_any = 0;
+    uint32_t pred_nonzero = 0;
+    uint32_t contrib_nonzero = 0;
+
+    float pred_sum_r = 0.0f;
+    float pred_sum_g = 0.0f;
+    float pred_sum_b = 0.0f;
+    uint32_t pred_min_r_bits = 0u;
+    uint32_t pred_min_g_bits = 0u;
+    uint32_t pred_min_b_bits = 0u;
+    uint32_t pred_max_r_bits = 0u;
+    uint32_t pred_max_g_bits = 0u;
+    uint32_t pred_max_b_bits = 0u;
+
+    float th_sum_r = 0.0f;
+    float th_sum_g = 0.0f;
+    float th_sum_b = 0.0f;
+    uint32_t th_min_r_bits = 0u;
+    uint32_t th_min_g_bits = 0u;
+    uint32_t th_min_b_bits = 0u;
+    uint32_t th_max_r_bits = 0u;
+    uint32_t th_max_g_bits = 0u;
+    uint32_t th_max_b_bits = 0u;
+
+    float contrib_sum_r = 0.0f;
+    float contrib_sum_g = 0.0f;
+    float contrib_sum_b = 0.0f;
+    uint32_t contrib_min_r_bits = 0u;
+    uint32_t contrib_min_g_bits = 0u;
+    uint32_t contrib_min_b_bits = 0u;
+    uint32_t contrib_max_r_bits = 0u;
+    uint32_t contrib_max_g_bits = 0u;
+    uint32_t contrib_max_b_bits = 0u;
+    float contrib_sum_luma = 0.0f;
+};
+
 __global__ void kernelRender(const Camara* camara, const Primitiva* primitivas, int num_primitivas, const LuzPuntual* luces, int num_luces,
                             const Primitiva* primitivas_malla, int num_primitivas_malla, int ancho_img, int alto_img, int samples_per_pixel, int frame_number,
                             const NodoBVH* nodos_bvh, const Primitiva* primitivas_bvh, int num_nodos_bvh,
@@ -94,3 +150,12 @@ void launchKernelPrepararInferenciaTail(dim3 gridSize, dim3 blockSize,
                                         const RegistroEntrenamiento* source_registros,
                                         DatosMLP* dest_inference_inputs,
                                         int num_elements);
+
+// Calcula stats de depuración
+void launchKernelNrcDebugStats(dim3 gridSize, dim3 blockSize,
+    const Color* buffer_pt,
+    const Color* buffer_prediccion,
+    const Color* buffer_throughput,
+    int num_pixels,
+    int sample_count,
+    NrcDebugStats* d_stats);

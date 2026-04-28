@@ -230,7 +230,11 @@ public:
                         // para que la red aprenda a predecir el tiempo restante hasta la luz
                         double t_input = T_target - tiempo_acumulado; 
 
-                        if (t_input >= 0.0 && t_input < t_final) {
+                        Vector3d pos_luz = escena.luces[0].posicion; 
+                        double distancia_a_luz = (punto_interseccion - pos_luz).length();
+                        double t_vuelo_minimo = distancia_a_luz / 299792458.0;
+
+                        if (t_input >= t_vuelo_minimo && t_input < t_final) {
                             // Capturar datos para inferencia
                             datos_inf.posicion = punto_interseccion; 
                             datos_inf.direccion = dir_mapped;
@@ -517,6 +521,14 @@ public:
         // Inicializar semilla RNG basada en píxel, frame y profundidad
         uint32_t rng_seed = inicializarSemilla(x, y, frame_number);
 
+        // Si estamos en WARMUP (entrenar_red=true, usar_red_inferencia=false)
+        if (entrenar_red && !usar_red_inferencia) {
+            // Solo dejamos pasar al 27% de los hilos para no saturar el buffer de 65k.
+            if (pcg32_float(rng_seed) > 0.27f) {
+                return; 
+            }
+        }
+
         Color color_pixel(0, 0, 0);
         
         float offset_x = pcg32_float(rng_seed);
@@ -533,7 +545,7 @@ public:
         // Fase 1 (Warmup): entrenar_red=true, usar_red_inferencia=false → 100% entrenamiento
         // Fase 2 (Post-warmup a frame 80): entrenar_red=true, usar_red_inferencia=true → 3% entrena, 97% infiere
         // Fase 3 (Frame 80+): entrenar_red=false, usar_red_inferencia=true → 0% entrena, 100% infiere
-        bool es_training_pixel = !modo_reconstruccion ? (entrenar_red ? (usar_red_inferencia ? (pcg32_float(rng_seed) < 0.2f) : true) : false) : false;
+        bool es_training_pixel = !modo_reconstruccion ? (entrenar_red ? (usar_red_inferencia ? (pcg32_float(rng_seed) < 0.05f) : true) : false) : false;
 
         Color color = lanzarRayoIterativo(rayo, escena, rng_seed, x, y, frame_number, transientRenderer,
                                             reg_train, guardar_train, 

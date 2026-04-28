@@ -26,6 +26,7 @@
 #include <string>
 #include <thread>
 #include <cstring>
+#include <cfloat>
 #include <iomanip>
 #include <atomic>
 #include <memory>
@@ -238,6 +239,7 @@ void inicializarEscena(Primitiva** d_primitivas, int* num_primitivas, LuzPuntual
     pared_fondo.indice_refraccion = 1.0f;
     host_primitivas.push_back(pared_fondo);
 
+    /*
     // Esfera cristal Grande (Izquierda - Muy Cerca)
     Primitiva s1 = {};
     s1.tipo = ESFERA;
@@ -324,7 +326,7 @@ void inicializarEscena(Primitiva** d_primitivas, int* num_primitivas, LuzPuntual
     s7.transmision = Color(0,0,0);
     s7.indice_refraccion = 1.0f;
     host_primitivas.push_back(s7);
-    
+    */
 
     // Copiar las primitivas a la GPU
     cudaMalloc(d_primitivas, host_primitivas.size() * sizeof(Primitiva));
@@ -354,6 +356,123 @@ void limpiarGPU(Primitiva* d_primitivas, LuzPuntual* d_luces) {
     if (d_luces) {
         cudaFree(d_luces);
     }
+}
+
+// Función auxiliar para actualizar estadísticas de depuración del NRC/MLP
+void actualizarDebugStatsNRC(
+    Color* d_imagen_data, 
+    Color* d_buffer_radiance_predicha, 
+    Color* d_buffer_throughput,
+    NrcDebugStats* d_nrc_stats,
+    int num_pixels,
+    RenderGuiState& runtime_state) {
+    
+    int sample_count = runtime_state.mlpDebugTargetSamples;
+    if (sample_count < 1) sample_count = 1;
+    if (sample_count > num_pixels) sample_count = num_pixels;
+
+    auto float_to_bits = [](float v) -> uint32_t {
+        uint32_t u;
+        std::memcpy(&u, &v, sizeof(uint32_t));
+        return u;
+    };
+    auto bits_to_float = [](uint32_t u) -> float {
+        float v;
+        std::memcpy(&v, &u, sizeof(uint32_t));
+        return v;
+    };
+
+    int step = num_pixels / sample_count;
+    if (step < 1) step = 1;
+    int n_samples = (num_pixels + step - 1) / step;
+
+    NrcDebugStats init{};
+    uint32_t fltmax_bits = float_to_bits(FLT_MAX);
+    init.pt_min_r_bits = fltmax_bits;
+    init.pt_min_g_bits = fltmax_bits;
+    init.pt_min_b_bits = fltmax_bits;
+    init.pred_min_r_bits = fltmax_bits;
+    init.pred_min_g_bits = fltmax_bits;
+    init.pred_min_b_bits = fltmax_bits;
+    init.th_min_r_bits = fltmax_bits;
+    init.th_min_g_bits = fltmax_bits;
+    init.th_min_b_bits = fltmax_bits;
+    init.contrib_min_r_bits = fltmax_bits;
+    init.contrib_min_g_bits = fltmax_bits;
+    init.contrib_min_b_bits = fltmax_bits;
+    cudaMemcpy(d_nrc_stats, &init, sizeof(NrcDebugStats), cudaMemcpyHostToDevice);
+
+    int threads = 256;
+    int blocks = (n_samples + threads - 1) / threads;
+    launchKernelNrcDebugStats(dim3(blocks), dim3(threads),
+        d_imagen_data, d_buffer_radiance_predicha, d_buffer_throughput,
+        num_pixels, sample_count, d_nrc_stats);
+
+    NrcDebugStats h_stats{};
+    cudaMemcpy(&h_stats, d_nrc_stats, sizeof(NrcDebugStats), cudaMemcpyDeviceToHost);
+
+    uint32_t denom_all = h_stats.sampled > 0 ? h_stats.sampled : 1u;
+    float inv_all = 1.0f / (float)denom_all;
+    uint32_t denom_active = h_stats.pred_nonzero > 0 ? h_stats.pred_nonzero : 1u;
+    float inv_active = 1.0f / (float)denom_active;
+
+    runtime_state.ptSampled = (int)h_stats.sampled;
+    runtime_state.nrcSampled = (int)h_stats.sampled;
+
+    runtime_state.ptNonZero = (int)h_stats.pt_nonzero;
+    runtime_state.ptNanInf = (int)h_stats.pt_naninf;
+    runtime_state.ptMeanR = h_stats.pt_sum_r * inv_all;
+    runtime_state.ptMeanG = h_stats.pt_sum_g * inv_all;
+    runtime_state.ptMeanB = h_stats.pt_sum_b * inv_all;
+    runtime_state.ptMinR = (h_stats.pt_min_r_bits == fltmax_bits) ? 0.0f : bits_to_float(h_stats.pt_min_r_bits);
+    runtime_state.ptMinG = (h_stats.pt_min_g_bits == fltmax_bits) ? 0.0f : bits_to_float(h_stats.pt_min_g_bits);
+    runtime_state.ptMinB = (h_stats.pt_min_b_bits == fltmax_bits) ? 0.0f : bits_to_float(h_stats.pt_min_b_bits);
+    runtime_state.ptMaxR = bits_to_float(h_stats.pt_max_r_bits);
+    runtime_state.ptMaxG = bits_to_float(h_stats.pt_max_g_bits);
+    runtime_state.ptMaxB = bits_to_float(h_stats.pt_max_b_bits);
+
+    runtime_state.nrcNanInf = (int)h_stats.naninf_any;
+    runtime_state.predNonZero = (int)h_stats.pred_nonzero;
+    runtime_state.contribNonZero = (int)h_stats.contrib_nonzero;
+
+    // Predicción
+    runtime_state.predMeanR = h_stats.pred_sum_r * inv_all;
+    runtime_state.predMeanG = h_stats.pred_sum_g * inv_all;
+    runtime_state.predMeanB = h_stats.pred_sum_b * inv_all;
+    runtime_state.predMinR = (h_stats.pred_min_r_bits == fltmax_bits) ? 0.0f : bits_to_float(h_stats.pred_min_r_bits);
+    runtime_state.predMinG = (h_stats.pred_min_g_bits == fltmax_bits) ? 0.0f : bits_to_float(h_stats.pred_min_g_bits);
+    runtime_state.predMinB = (h_stats.pred_min_b_bits == fltmax_bits) ? 0.0f : bits_to_float(h_stats.pred_min_b_bits);
+    runtime_state.predMaxR = bits_to_float(h_stats.pred_max_r_bits);
+    runtime_state.predMaxG = bits_to_float(h_stats.pred_max_g_bits);
+    runtime_state.predMaxB = bits_to_float(h_stats.pred_max_b_bits);
+
+    // Throughput
+    runtime_state.thMeanR = h_stats.th_sum_r * inv_all;
+    runtime_state.thMeanG = h_stats.th_sum_g * inv_all;
+    runtime_state.thMeanB = h_stats.th_sum_b * inv_all;
+    runtime_state.thMinR = (h_stats.th_min_r_bits == fltmax_bits) ? 0.0f : bits_to_float(h_stats.th_min_r_bits);
+    runtime_state.thMinG = (h_stats.th_min_g_bits == fltmax_bits) ? 0.0f : bits_to_float(h_stats.th_min_g_bits);
+    runtime_state.thMinB = (h_stats.th_min_b_bits == fltmax_bits) ? 0.0f : bits_to_float(h_stats.th_min_b_bits);
+    runtime_state.thMaxR = bits_to_float(h_stats.th_max_r_bits);
+    runtime_state.thMaxG = bits_to_float(h_stats.th_max_g_bits);
+    runtime_state.thMaxB = bits_to_float(h_stats.th_max_b_bits);
+
+    // Contribución
+    runtime_state.contribMeanR = h_stats.contrib_sum_r * inv_active;
+    runtime_state.contribMeanG = h_stats.contrib_sum_g * inv_active;
+    runtime_state.contribMeanB = h_stats.contrib_sum_b * inv_active;
+    runtime_state.contribMinR = (h_stats.contrib_min_r_bits == fltmax_bits) ? 0.0f : bits_to_float(h_stats.contrib_min_r_bits);
+    runtime_state.contribMinG = (h_stats.contrib_min_g_bits == fltmax_bits) ? 0.0f : bits_to_float(h_stats.contrib_min_g_bits);
+    runtime_state.contribMinB = (h_stats.contrib_min_b_bits == fltmax_bits) ? 0.0f : bits_to_float(h_stats.contrib_min_b_bits);
+    runtime_state.contribMaxR = bits_to_float(h_stats.contrib_max_r_bits);
+    runtime_state.contribMaxG = bits_to_float(h_stats.contrib_max_g_bits);
+    runtime_state.contribMaxB = bits_to_float(h_stats.contrib_max_b_bits);
+
+    float pt_mean_luma = h_stats.pt_sum_luma * inv_all;
+    // Contribución luma
+    float contrib_mean_luma = h_stats.contrib_sum_luma * inv_all;
+    float eps = 1e-12f;
+    runtime_state.meanLumaRatioContribOverPT = contrib_mean_luma / fmaxf(pt_mean_luma, eps);
 }
 
 bool moverCamara(GLFWwindow* window, Camara* d_camara, float delta_time_s, float velocidad=2.5f) {
@@ -484,6 +603,10 @@ bool renderizarModoReconstruccion(int ancho_imagen, int alto_imagen, string nomb
     dim3 gridSize((ancho_imagen + blockSize.x - 1) / blockSize.x, 
                   (alto_imagen + blockSize.y - 1) / blockSize.y);
 
+	// Debug stats (GPU)
+	NrcDebugStats* d_nrc_stats = nullptr;
+	cudaMalloc(&d_nrc_stats, sizeof(NrcDebugStats));
+
     Color* d_imagen_data = nullptr;
     DatosMLP* d_buffer_inference_inputs = nullptr;
     Color* d_buffer_radiance_predicha = nullptr;
@@ -511,6 +634,7 @@ bool renderizarModoReconstruccion(int ancho_imagen, int alto_imagen, string nomb
     runtime_state.warmupActive = false;
     runtime_state.pauseRendering = false;
     runtime_state.resetAccumulation = false;
+	runtime_state.trainingSamplesLastStep = 0;
 
     ventana->actualizar(acumulador_cpu, 1);
 
@@ -530,9 +654,36 @@ bool renderizarModoReconstruccion(int ancho_imagen, int alto_imagen, string nomb
     auto last_input_time = chrono::high_resolution_clock::now();
     int sample_actual = 0;
     int iteracion = 0;
+    // Para FPS y tiempo restante
+    int last_estimate_sample = -1;
 
     while (sample_actual < samples_per_pixel && ventana->procesarEventos()) {
         iteracion++;
+
+        // FPS y tiempo estimado
+        if (sample_actual % 60 == 0) {
+            // FPS
+            float frameTimeSec = runtime_state.lastFrameMs / 1000.0f;
+            if (frameTimeSec > 0.0f) {
+                runtime_state.lastFPS = 1.0f / frameTimeSec;
+            } else {
+                runtime_state.lastFPS = 0.0f;
+            }
+
+            // Tiempo restante
+            int spp_restantes = samples_per_pixel - sample_actual;
+            float fps = runtime_state.lastFPS;
+            int segundos_restantes = 0;
+            if (fps > 0.0f && spp_restantes > 0) {
+                segundos_restantes = (int)std::round((float)spp_restantes / fps);
+            }
+            if (segundos_restantes < 0){
+                segundos_restantes = 0;
+            }
+            runtime_state.estHours = segundos_restantes / 3600;
+            runtime_state.estMinutes = (segundos_restantes % 3600) / 60;
+            runtime_state.estSeconds = (segundos_restantes % 60);
+        }
 
         auto now_input = chrono::high_resolution_clock::now();
         float dt_input = chrono::duration<float>(now_input - last_input_time).count();
@@ -590,6 +741,12 @@ bool renderizarModoReconstruccion(int ancho_imagen, int alto_imagen, string nomb
 
         // Inferencia para generar predicción
         mlp->inference(d_buffer_inference_inputs, d_buffer_radiance_predicha, num_pixels);
+
+        // ===================== MLP/NRC Debug stats =====================
+        if (runtime_state.mlpDebugEnabled && (runtime_state.mlpDebugUpdateEvery <= 1 || (iteracion % runtime_state.mlpDebugUpdateEvery == 0))) {
+            actualizarDebugStatsNRC(d_imagen_data, d_buffer_radiance_predicha, d_buffer_throughput, 
+                                   d_nrc_stats, num_pixels, runtime_state);
+        }
 
         // Componer imagen final: luz directa + (throughput * predicción)
         launchKernelComposite(gridSize, blockSize, d_imagen_data, d_buffer_radiance_predicha, d_buffer_throughput, ancho_imagen, alto_imagen, true);
@@ -658,26 +815,39 @@ bool renderizarModoReconstruccion(int ancho_imagen, int alto_imagen, string nomb
     }
 
     if (activar_transient) {
+        const float transient_exposicion_min = 10.0f;
+        const float transient_exposicion_max = 20.0f;
         for (int i = 0; i < transientRenderer->num_frames; ++i) {
+            // Traer datos de GPU a CPU de forma segura
             vector<Color> buffer_host = transientRenderer->obtenerFrameHost(i);
 
+            float alpha = 0.0f;
+            if (transientRenderer->num_frames > 1) {
+                alpha = (float)i / (float)(transientRenderer->num_frames - 1);
+            }
+            float exposure = transient_exposicion_min + alpha * (transient_exposicion_max - transient_exposicion_min);
+                
+            // Crear una imagen temporal en CPU para guardar
             Imagen img_temp(ancho_imagen, alto_imagen);
-            for (int k = 0; k < ancho_imagen * alto_imagen; k++) {
-                Color c = buffer_host[k] * inv_samples;
+            // Copiar datos del vector al formato que use tu clase Imagen
+            for(int k=0; k<ancho_imagen*alto_imagen; k++) {
+                // Normalizar por el número de muestras
+                Color c = buffer_host[k] / samples_per_pixel;
+                c = c * exposure;
                 img_temp.datos[k] = c;
             }
-
+                
+            // Quitar extensión del nombre si la tiene
             string base_nombre = nombre_archivo;
             size_t pos_ext = base_nombre.rfind('.');
             if (pos_ext != string::npos) base_nombre = base_nombre.substr(0, pos_ext);
             string nombre = "../transient/" + base_nombre + "_" + to_string(i) + ".png";
-
-            Imagen res = img_temp.reinhard().gamma();
-            res = res * 2.0f;
-            res = res.clamping();
+            Imagen res = img_temp.gamma();
             guardarPNG(res, nombre.c_str());
         }
         cout << "Imágenes transient guardadas en carpeta 'transient/'" << endl;
+    } else {
+        cout << "Render transitorio desactivado, no se guardan frames transient." << endl;
     }
 
     runtime_state.accumulatedSamples = sample_actual;
@@ -709,6 +879,7 @@ bool renderizarModoReconstruccion(int ancho_imagen, int alto_imagen, string nomb
     cudaFree(d_buffer_radiance_predicha);
     cudaFree(d_buffer_throughput);
     cudaFree(d_mlp_counter);
+	cudaFree(d_nrc_stats);
     return true;
 }
 
@@ -942,7 +1113,7 @@ int main() {
         scene_bounds.min = Vector3d(-6.0f, -4.0f, -10.0f);
         scene_bounds.max = Vector3d( 6.0f,  6.0f,  2.0f);
         scene_bounds.t_min = 0.0f;
-        scene_bounds.t_max = t_final * 1.5f;
+        scene_bounds.t_max = t_final * 1.01f;
 
         // MODO RECONSTRUCCIÓN: Solo inferencia de MLP
         if (gui_state.renderMode == 1) {
@@ -983,6 +1154,10 @@ int main() {
         cudaMalloc(&d_buffer_radiance_predicha, num_pixels * sizeof(Color));
         Color* d_buffer_throughput; 
         cudaMalloc(&d_buffer_throughput, num_pixels * sizeof(Color));
+
+		// Debug stats (GPU)
+		NrcDebugStats* d_nrc_stats = nullptr;
+		cudaMalloc(&d_nrc_stats, sizeof(NrcDebugStats));
 
         // Buffers para bootstrapping (Entrenamiento)
         RegistroEntrenamiento* d_buffer_registros_raw; 
@@ -1064,6 +1239,36 @@ int main() {
             }
 
             auto frame_inicio = chrono::high_resolution_clock::now();
+
+            // FPS y tiempo estimado
+            if (s % 60 == 0) {
+                // FPS
+                float frameTimeSec = runtime_state.lastFrameMs / 1000.0f;
+                if (frameTimeSec > 0.0f) {
+                    runtime_state.lastFPS = 1.0f / frameTimeSec;
+                } else {
+                    runtime_state.lastFPS = 0.0f;
+                }
+
+                // Tiempo restante
+                int spp_restantes = 0;
+                if ((WARMUP_SAMPLES > 0) && (s < WARMUP_SAMPLES)) {
+                    spp_restantes = WARMUP_SAMPLES - s - 1 + samples_per_pixel;
+                } else {
+                    spp_restantes = samples_per_pixel - (s - WARMUP_SAMPLES) - 1;
+                }
+                float fps = runtime_state.lastFPS;
+                int segundos_restantes = 0;
+                if (fps > 0.0f && spp_restantes > 0) {
+                    segundos_restantes = (int)std::round((float)spp_restantes / fps);
+                }
+                if (segundos_restantes < 0){
+                    segundos_restantes = 0;
+                }
+                runtime_state.estHours = segundos_restantes / 3600;
+                runtime_state.estMinutes = (segundos_restantes % 3600) / 60;
+                runtime_state.estSeconds = (segundos_restantes % 60);
+            }
             
             // Fase 1 (Warmup): 100% entrenamiento
             // Fase 2 3% entrena, 97% infiere
@@ -1134,6 +1339,13 @@ int main() {
             if(!es_warmup){
                 // Inferencia para imagen final
                 mlp->inference(d_buffer_inference_inputs, d_buffer_radiance_predicha, num_pixels);
+
+                // ===================== MLP/NRC Debug stats =====================
+                if (runtime_state.mlpDebugEnabled && (runtime_state.mlpDebugUpdateEvery <= 1 || (s % runtime_state.mlpDebugUpdateEvery == 0))) {
+                    actualizarDebugStatsNRC(d_imagen_data, d_buffer_radiance_predicha, d_buffer_throughput, 
+                                           d_nrc_stats, num_pixels, runtime_state);
+                }
+
                 launchKernelComposite(gridSize, blockSize, d_imagen_data, d_buffer_radiance_predicha, d_buffer_throughput, ancho_imagen, alto_imagen, false);
 
                 // Si está activo el transient, depositar también la contribución NRC en los bins temporales
@@ -1156,6 +1368,8 @@ int main() {
             // Ajustar para que sea perfectamente divisible en 4 batches
             n_train_host = (n_train_host / 4) * 4; 
 
+			runtime_state.trainingSamplesLastStep = (int)n_train_host;
+
             if (n_train_host > 1024) {
                 int threads = 256;
                 int blocks = (n_train_host + threads - 1) / threads;
@@ -1177,16 +1391,15 @@ int main() {
             }
             // ==============================================================================
 
-            // Acumulación
+            // Acumulación y actualización de métricas de frame
+            auto frame_fin = chrono::high_resolution_clock::now();
+            runtime_state.lastFrameMs = chrono::duration<float, std::milli>(frame_fin - frame_inicio).count();
+            runtime_state.totalRenderMs = chrono::duration<float, std::milli>(frame_fin - render_inicio).count();
+
             if (!es_warmup) {
                 frames_acumulados_reales++;
                 cudaMemcpy(frame_cpu.data(), d_imagen_data, num_pixels * sizeof(Color), cudaMemcpyDeviceToHost);
                 for(int i=0; i < num_pixels; i++) acumulador_cpu[i] = acumulador_cpu[i] + frame_cpu[i];
-
-                auto frame_fin = chrono::high_resolution_clock::now();
-                runtime_state.lastFrameMs = chrono::duration<float, std::milli>(frame_fin - frame_inicio).count();
-                runtime_state.totalRenderMs = chrono::duration<float, std::milli>(frame_fin - render_inicio).count();
-                
                 if (s % 2 == 0) ventana->actualizar(acumulador_cpu, frames_acumulados_reales);
             } else {
                 // Mantener UI viva durante el warmup (solo entrenamiento)
@@ -1219,14 +1432,16 @@ int main() {
             mlp->save_model("mlp_model.json");
         }
 
+		cudaFree(d_nrc_stats);
+
         cout << "\n==============================================" << endl;
         cout << "====         GUARDANDO RESULTADOS         ====" << endl;
         cout << "==============================================" << endl;
 
         // TRANSIENT 
         if (activar_transient) {
-            const float transient_exposure_min = 10.0f;
-            const float transient_exposure_max = 20.0f;
+            const float transient_exposicion_min = 10.0f;
+            const float transient_exposicion_max = 20.0f;
             for (int i = 0; i < transientRenderer->num_frames; ++i) {
                 // Traer datos de GPU a CPU de forma segura
                 vector<Color> buffer_host = transientRenderer->obtenerFrameHost(i);
@@ -1235,7 +1450,7 @@ int main() {
                 if (transientRenderer->num_frames > 1) {
                     alpha = (float)i / (float)(transientRenderer->num_frames - 1);
                 }
-                float exposure = transient_exposure_min + alpha * (transient_exposure_max - transient_exposure_min);
+                float exposure = transient_exposicion_min + alpha * (transient_exposicion_max - transient_exposicion_min);
                 
                 // Crear una imagen temporal en CPU para guardar
                 Imagen img_temp(ancho_imagen, alto_imagen);

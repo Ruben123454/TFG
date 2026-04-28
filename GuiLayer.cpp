@@ -95,7 +95,7 @@ void GuiLayer::drawConfigScreen(RenderGuiState& state) {
 	
 	ImGui::InputInt("Muestras por Pixel (SPP)##spp", &state.samplesPerPixel, 1, 10);
 	if (state.samplesPerPixel < 1) state.samplesPerPixel = 1;
-	if (state.samplesPerPixel > 1000000) state.samplesPerPixel = 1000000;
+	if (state.samplesPerPixel > 10000000) state.samplesPerPixel = 10000000;
 
 	ImGui::Checkbox("Activar Transient Render", &state.activarTransient);
 	if (state.activarTransient) {
@@ -138,9 +138,10 @@ void GuiLayer::drawControls(RenderGuiState& state) {
 	ImGui::Begin("Path Tracer Controls");
 
 	ImGui::Text("SPP acumuladas: %d", state.accumulatedSamples);
-	ImGui::Text("Tiempo frame: %.2f ms", state.lastFrameMs);
+	ImGui::Text("Tiempo frame: %.2f ms (FPS: %.1f)", state.lastFrameMs, state.lastFPS);
 	ImGui::Text("Tiempo total render: %.2f ms", state.totalRenderMs);
 	ImGui::Text("Tiempo total ejecución: %.2f ms", state.totalExecutionMs);
+	ImGui::Text("Tiempo restante estimado: %02dh %02dm %02ds", state.estHours, state.estMinutes, state.estSeconds);
 	if (state.warmupActive) {
 		ImGui::Separator();
 		ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "WARM UP");
@@ -173,7 +174,7 @@ void GuiLayer::drawControls(RenderGuiState& state) {
 		state.configUpdate = true;
 	}
 	if (state.samplesPerPixel < 1) state.samplesPerPixel = 1;
-	if (state.samplesPerPixel > 1000000) state.samplesPerPixel = 1000000;
+	if (state.samplesPerPixel > 10000000) state.samplesPerPixel = 10000000;
 
 	if(!state.renderMode == 1) {
 		ImGui::Separator();
@@ -216,6 +217,48 @@ void GuiLayer::drawControls(RenderGuiState& state) {
 		ImGui::Text("BVH no construido");
 	}
 	ImGui::Text("Pérdida entrenamiento: %.6f", state.trainingLoss);
+	ImGui::Text("Training samples (last step): %d", state.trainingSamplesLastStep);
+	ImGui::Separator();
+	ImGui::TextUnformatted("MLP/NRC Debug:");
+	ImGui::Checkbox("Enable stats", &state.mlpDebugEnabled);
+	ImGui::SameLine();
+	ImGui::SetNextItemWidth(70.0f);
+	ImGui::InputInt("##updateEvery", &state.mlpDebugUpdateEvery, 1, 10);
+	ImGui::SameLine();
+	ImGui::TextUnformatted("Update every N");
+	if (state.mlpDebugUpdateEvery < 1) state.mlpDebugUpdateEvery = 1;
+
+	ImGui::SetNextItemWidth(120.0f);
+	ImGui::InputInt("##sampleCount", &state.mlpDebugTargetSamples, 100, 1000);
+	ImGui::SameLine();
+	ImGui::TextUnformatted("Sample count");
+	if (state.mlpDebugTargetSamples < 1) state.mlpDebugTargetSamples = 1;
+	if (state.mlpDebugTargetSamples > 1000000) state.mlpDebugTargetSamples = 1000000;
+
+	ImGui::Text("PT (pre-composite) sampled: %d | nonzero: %d | NaN/Inf: %d", state.ptSampled, state.ptNonZero, state.ptNanInf);
+	ImGui::Text("PT mean RGB: (%.4f, %.4f, %.4f)", state.ptMeanR, state.ptMeanG, state.ptMeanB);
+	ImGui::Text("PT min  RGB: (%.4f, %.4f, %.4f)", state.ptMinR, state.ptMinG, state.ptMinB);
+	ImGui::Text("PT max  RGB: (%.4f, %.4f, %.4f)", state.ptMaxR, state.ptMaxG, state.ptMaxB);
+
+	ImGui::Separator();
+	ImGui::Text("NRC sampled: %d | NaN/Inf: %d", state.nrcSampled, state.nrcNanInf);
+	ImGui::Text("Pred nonzero: %d | Contrib nonzero: %d", state.predNonZero, state.contribNonZero);
+	ImGui::Text("Pred mean RGB: (%.6f, %.6f, %.6f)", state.predMeanR, state.predMeanG, state.predMeanB);
+	ImGui::Text("Pred min  RGB: (%.4f, %.4f, %.4f)", state.predMinR, state.predMinG, state.predMinB);
+	ImGui::Text("Pred max  RGB: (%.4f, %.4f, %.4f)", state.predMaxR, state.predMaxG, state.predMaxB);
+
+	ImGui::Separator();
+	ImGui::Text("Throughput mean RGB (active): (%.4f, %.4f, %.4f)", state.thMeanR, state.thMeanG, state.thMeanB);
+	ImGui::Text("Throughput min  RGB (active): (%.3e, %.3e, %.3e)", state.thMinR, state.thMinG, state.thMinB);
+	ImGui::Text("Throughput max  RGB (active): (%.4f, %.4f, %.4f)", state.thMaxR, state.thMaxG, state.thMaxB);
+
+	ImGui::Separator();
+	ImGui::Text("Contrib mean RGB (th*pred): (%.6f, %.6f, %.6f)", state.contribMeanR, state.contribMeanG, state.contribMeanB);
+	ImGui::Text("Contrib min  RGB (th*pred): (%.4f, %.4f, %.4f)", state.contribMinR, state.contribMinG, state.contribMinB);
+	ImGui::Text("Contrib max  RGB (th*pred): (%.4f, %.4f, %.4f)", state.contribMaxR, state.contribMaxG, state.contribMaxB);
+
+	ImGui::Separator();
+	ImGui::Text("Mean luma ratio (contrib/PT): %.6f", state.meanLumaRatioContribOverPT);
 	ImGui::End();
 }
 

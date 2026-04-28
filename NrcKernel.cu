@@ -126,11 +126,15 @@ __global__ void guardarSalidaInferencia(float* network_output, Color* buffer_col
     if (isinf(g)) g = max_val;
     if (isinf(b)) b = max_val;
 
-    float umbral_ruido = 0.05f;
-    if (r < umbral_ruido) r = 0.0f;
-    if (g < umbral_ruido) g = 0.0f;
-    if (b < umbral_ruido) b = 0.0f;
-
+    r = expf(r) - 1.0f;
+    g = expf(g) - 1.0f;
+    b = expf(b) - 1.0f;
+    
+    if (r < 0.0f) r = 0.0f;
+    if (g < 0.0f) g = 0.0f;
+    if (b < 0.0f) b = 0.0f;
+    
+   
     buffer_color[idx] = Color(r, g, b);
 }
 
