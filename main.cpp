@@ -594,7 +594,7 @@ bool renderizarModoReconstruccion(
         }
 
         mlp->inference(d_buffer_inference_inputs, d_buffer_radiance_predicha, num_pixels);
-        launchKernelComposite(gridSize, blockSize, d_imagen_data, d_buffer_radiance_predicha, d_buffer_throughput, ancho_imagen, alto_imagen);
+        launchKernelComposite(gridSize, blockSize, d_imagen_data, d_buffer_radiance_predicha, d_buffer_throughput, ancho_imagen, alto_imagen, true);
         cudaDeviceSynchronize();
 
         cudaMemcpy(frame_cpu.data(), d_imagen_data, num_pixels * sizeof(Color), cudaMemcpyDeviceToHost);
@@ -1026,7 +1026,7 @@ int main() {
 
             // Inferencia para imagen final
             mlp->inference(d_buffer_inference_inputs, d_buffer_radiance_predicha, num_pixels);
-            launchKernelComposite(gridSize, blockSize, d_imagen_data, d_buffer_radiance_predicha, d_buffer_throughput, ancho_imagen, alto_imagen);
+            launchKernelComposite(gridSize, blockSize, d_imagen_data, d_buffer_radiance_predicha, d_buffer_throughput, ancho_imagen, alto_imagen, false);
 
             // ===================== Entrenamiento (BOOTSTRAPPING) =========================
             unsigned int n_train_host = 0; // Variable para almacenar el número de datos válidos para entrenamiento
@@ -1037,8 +1037,6 @@ int main() {
 
             // Ajustar para que sea perfectamente divisible en 4 batches
             n_train_host = (n_train_host / 4) * 4; 
-            int s_batches = 4; // Número de batches para dividir los datos de entrenamiento
-            int l_records_per_batch = n_train_host / s_batches; // Datos por batch
 
             if (n_train_host > 1024) {
                 int threads = 256;

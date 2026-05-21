@@ -62,7 +62,7 @@ void launchKernelRenderTiny(dim3 gridSize, dim3 blockSize,
 
 void launchKernelComposite(dim3 gridSize, dim3 blockSize,
                            Color* img_pt, Color* img_prediccion, Color* throughput_map,
-                           int ancho, int alto);
+                           int ancho, int alto, bool modo_reconstruccion);
 
 void launchInicializarCamara(Camara* d_camara, int ancho_imagen, int alto_imagen);
 

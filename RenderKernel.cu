@@ -47,7 +47,7 @@ __global__ void kernelRender_tiny(const Camara* camara, const Primitiva* primiti
 }
 
 __global__ void kernelComposite(Color* img_pt, Color* img_prediccion, Color* throughput_map,
-                                int ancho, int alto) {
+                                int ancho, int alto, bool modo_reconstruccion) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     int idx = y * ancho + x;
@@ -57,11 +57,15 @@ __global__ void kernelComposite(Color* img_pt, Color* img_prediccion, Color* thr
         Color th = throughput_map[idx];
         Color indirecta_neuronal = img_prediccion[idx];
 
-        if (th.r > 0 || th.g > 0 || th.b > 0) {
-            final = final + (th * indirecta_neuronal);
-        }
+        if(!modo_reconstruccion){
+            if (th.r > 0 || th.g > 0 || th.b > 0) {
+                final = final + (th * indirecta_neuronal);
+            }
 
-        img_pt[idx] = final;
+            img_pt[idx] = final;
+        } else {
+            img_pt[idx] = (th * indirecta_neuronal);
+        }
     }
 }
 
@@ -201,8 +205,8 @@ void launchKernelRenderTiny(dim3 gridSize, dim3 blockSize,
 
 void launchKernelComposite(dim3 gridSize, dim3 blockSize,
                            Color* img_pt, Color* img_prediccion, Color* throughput_map,
-                           int ancho, int alto) {
-    kernelComposite<<<gridSize, blockSize>>>(img_pt, img_prediccion, throughput_map, ancho, alto);
+                           int ancho, int alto, bool modo_reconstruccion) {
+    kernelComposite<<<gridSize, blockSize>>>(img_pt, img_prediccion, throughput_map, ancho, alto, modo_reconstruccion);
 }
 
 void launchInicializarCamara(Camara* d_camara, int ancho_imagen, int alto_imagen) {
