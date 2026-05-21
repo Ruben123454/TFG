@@ -32,7 +32,7 @@ public:
 
     __device__ Color lanzarRayoIterativo(const Rayo& r_inicial, const Escenario& escena, uint32_t& rng_seed,
                                     RegistroEntrenamiento& registro_train, bool& guardar_train,
-                                    DatosMLP& datos_inf, Color& throughput_inf, bool& necesita_inf, bool es_ruta_entrenamiento, bool usar_red_inferencia) {
+                                    DatosMLP& datos_inf, Color& throughput_inf, bool& necesita_inf, bool es_ruta_entrenamiento, bool usar_red_inferencia, bool modo_reconstruccion) {
     Color color(0, 0, 0);
     Color camino(1, 1, 1); 
     Rayo rayo_actual = r_inicial;
@@ -122,12 +122,14 @@ public:
                 break;
             }
 
-            // NEE (Luz Directa)
-            if(es_difuso) {
-                Vector3d punto_sombra = punto_interseccion + normal * EPSILON;
-                Color L_dir = escena.calcularLuzDirecta(punto_sombra, normal, primitiva_intersectada, 0, 0, 0, camino, current_ior);
-                Color contrib_nee = camino * L_dir;
-                color = color + contrib_nee;
+            // NEE (Luz Directa) - omitir si es modo reconstrucción
+            if(!modo_reconstruccion) {
+                if(es_difuso) {
+                    Vector3d punto_sombra = punto_interseccion + normal * EPSILON;
+                    Color L_dir = escena.calcularLuzDirecta(punto_sombra, normal, primitiva_intersectada, 0, 0, 0, camino, current_ior);
+                    Color contrib_nee = camino * L_dir;
+                    color = color + contrib_nee;
+                }
             }
             
 
@@ -201,9 +203,11 @@ public:
                 }
             }
 
-            // Luz indirecta
-            calcularLuzIndirecta(rng_seed, rayo_actual, camino, r_inicial, 
-                            punto_interseccion, normal, primitiva_intersectada, current_ior, pdf_ultimo_rebote, ultimo_fue_especular);
+            // Luz indirecta - omitir si es modo reconstrucción
+            if(!modo_reconstruccion) {
+                calcularLuzIndirecta(rng_seed, rayo_actual, camino, r_inicial, 
+                                punto_interseccion, normal, primitiva_intersectada, current_ior, pdf_ultimo_rebote, ultimo_fue_especular);
+            }
 
             // Ruleta rusa
             if(profundidad > 10) {
@@ -419,7 +423,7 @@ public:
                               unsigned int* dev_counter, 
                               RegistroEntrenamiento* buffer_training, unsigned int* counter_training, int max_cap_training,
                               // Datos para inferencia
-                              DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red) {
+                              DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red, bool modo_reconstruccion) {
         
         // Inicializar semilla RNG basada en píxel, frame y profundidad
         uint32_t rng_seed = inicializarSemilla(x, y, frame_number);
@@ -444,9 +448,13 @@ public:
 
         Color color = lanzarRayoIterativo(rayo, escena, rng_seed,
                                             reg_train, guardar_train, 
-                                            datos_inferencia, throughput_inferencia, necesita_inferencia, es_training_pixel, usar_red_inferencia);
+                                            datos_inferencia, throughput_inferencia, necesita_inferencia, es_training_pixel, usar_red_inferencia, modo_reconstruccion);
 
-        imagen.setPixel(x, y, color);
+        if (modo_reconstruccion) {
+            imagen.setPixel(x, y, Color(0,0,0));
+        } else {
+            imagen.setPixel(x, y, color);
+        }
         
         // Guardar Datos Inferencia
         if (necesita_inferencia) {

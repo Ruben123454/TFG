@@ -570,7 +570,7 @@ bool renderizarModoReconstruccion(
             imagen,
             nullptr, nullptr, nullptr, 0,
             d_buffer_inference_inputs, d_buffer_throughput, 
-            true, false
+            true, false, true
         );
 
         cudaError_t err = cudaGetLastError();
@@ -1020,7 +1020,7 @@ int main() {
                 imagen,
                 nullptr, d_buffer_registros_raw, d_mlp_counter, num_pixels,
                 d_buffer_inference_inputs, d_buffer_throughput, 
-                !es_warmup, true
+                !es_warmup, true, false
             );
             
 

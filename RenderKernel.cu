@@ -8,7 +8,7 @@ __global__ void kernelRender(const Camara* camara, const Primitiva* primitivas, 
                             const NodoBVH* nodos_bvh, const Primitiva* primitivas_bvh, int num_nodos_bvh,
                             ImagenGPU imagen_directa,
                             unsigned int* dev_counter, RegistroEntrenamiento* buffer_registros, unsigned int* counter_train, int max_cap_train,
-                            DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red) {
+                            DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red, bool modo_reconstruccion) {
 
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -21,7 +21,7 @@ __global__ void kernelRender(const Camara* camara, const Primitiva* primitivas, 
         renderer.renderizar(*camara, escena, ancho_img, alto_img, x, y,
                             imagen_directa, frame_number,
                             dev_counter, buffer_registros, counter_train, max_cap_train,
-                            buffer_inference, buffer_throughput, usar_red_inferencia, entrenar_red);
+                            buffer_inference, buffer_throughput, usar_red_inferencia, entrenar_red, modo_reconstruccion);
     }
 }
 
@@ -30,7 +30,7 @@ __global__ void kernelRender_tiny(const Camara* camara, const Primitiva* primiti
                             TinyBVHD_GPU nodos_bvh, const Primitiva* primitivas_bvh, int num_nodos_bvh,
                             ImagenGPU imagen_directa,
                             unsigned int* dev_counter, RegistroEntrenamiento* buffer_registros, unsigned int* counter_train, int max_cap_train,
-                            DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red) {
+                            DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red, bool modo_reconstruccion) {
 
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -40,9 +40,9 @@ __global__ void kernelRender_tiny(const Camara* camara, const Primitiva* primiti
         Render renderer(0.9, samples_per_pixel);
 
         renderer.renderizar(*camara, escena, ancho_img, alto_img, x, y,
-                            imagen_directa, frame_number,
-                            dev_counter, buffer_registros, counter_train, max_cap_train,
-                            buffer_inference, buffer_throughput, usar_red_inferencia, entrenar_red);
+                imagen_directa, frame_number,
+                dev_counter, buffer_registros, counter_train, max_cap_train,
+                buffer_inference, buffer_throughput, usar_red_inferencia, entrenar_red, modo_reconstruccion);
     
 }
 
@@ -171,14 +171,14 @@ void launchKernelRender(dim3 gridSize, dim3 blockSize,
                         const NodoBVH* nodos_bvh, const Primitiva* primitivas_bvh, int num_nodos_bvh,
                         ImagenGPU imagen_directa,
                         unsigned int* dev_counter, RegistroEntrenamiento* buffer_registros, unsigned int* counter_train, int max_cap_train,
-                        DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red) {
+                        DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red, bool modo_reconstruccion) {
     kernelRender<<<gridSize, blockSize>>>(
         camara, primitivas, num_primitivas, luces, num_luces,
         primitivas_malla, num_primitivas_malla, ancho_img, alto_img, samples_per_pixel, frame_number,
         nodos_bvh, primitivas_bvh, num_nodos_bvh,
         imagen_directa,
         dev_counter, buffer_registros, counter_train, max_cap_train,
-        buffer_inference, buffer_throughput, usar_red_inferencia, entrenar_red
+        buffer_inference, buffer_throughput, usar_red_inferencia, entrenar_red, modo_reconstruccion
     );
 }
 
@@ -188,14 +188,14 @@ void launchKernelRenderTiny(dim3 gridSize, dim3 blockSize,
                             TinyBVHD_GPU nodos_bvh, const Primitiva* primitivas_bvh, int num_nodos_bvh,
                             ImagenGPU imagen_directa,
                             unsigned int* dev_counter, RegistroEntrenamiento* buffer_registros, unsigned int* counter_train, int max_cap_train,
-                            DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red) {
-    kernelRender_tiny<<<gridSize, blockSize>>>(
+                            DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red, bool modo_reconstruccion) {
+    kernelRender_tiny<<<gridSize, blockSize>>> (
         camara, primitivas, num_primitivas, luces, num_luces,
         primitivas_malla, num_primitivas_malla, ancho_img, alto_img, samples_per_pixel, frame_number,
         nodos_bvh, primitivas_bvh, num_nodos_bvh,
         imagen_directa,
         dev_counter, buffer_registros, counter_train, max_cap_train,
-        buffer_inference, buffer_throughput, usar_red_inferencia, entrenar_red
+        buffer_inference, buffer_throughput, usar_red_inferencia, entrenar_red, modo_reconstruccion
     );
 }
 

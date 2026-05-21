@@ -181,7 +181,7 @@ tcnn::json ejecutarGridSearch(
                             d_nodos, d_prims_bvh, n_nodos_bvh, 
                             img_gpu, 
                             nullptr, d_registros, d_counter, num_pixels, 
-                            d_infer, d_throu, false, true);
+                            d_infer, d_throu, false, true, false);
                         cudaDeviceSynchronize();
                         
                         unsigned int n_valid = 0;

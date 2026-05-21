@@ -16,14 +16,14 @@ __global__ void kernelRender(const Camara* camara, const Primitiva* primitivas, 
                             const NodoBVH* nodos_bvh, const Primitiva* primitivas_bvh, int num_nodos_bvh,
                             ImagenGPU imagen_directa,
                             unsigned int* dev_counter, RegistroEntrenamiento* buffer_registros, unsigned int* counter_train, int max_cap_train,
-                            DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red);
+                            DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red, bool modo_reconstruccion);
 
 __global__ void kernelRender_tiny(const Camara* camara, const Primitiva* primitivas, int num_primitivas, const LuzPuntual* luces, int num_luces,
                             const Primitiva* primitivas_malla, int num_primitivas_malla, int ancho_img, int alto_img, int samples_per_pixel, int frame_number,
                             TinyBVHD_GPU nodos_bvh, const Primitiva* primitivas_bvh, int num_nodos_bvh,
                             ImagenGPU imagen_directa,
                             unsigned int* dev_counter, RegistroEntrenamiento* buffer_registros, unsigned int* counter_train, int max_cap_train,
-                            DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red);
+                            DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red, bool modo_reconstruccion);
 
 __global__ void kernelComposite(Color* img_pt, Color* img_prediccion, Color* throughput_map,
                                 int ancho, int alto);
@@ -50,7 +50,7 @@ void launchKernelRender(dim3 gridSize, dim3 blockSize,
                         const NodoBVH* nodos_bvh, const Primitiva* primitivas_bvh, int num_nodos_bvh,
                         ImagenGPU imagen_directa,
                         unsigned int* dev_counter, RegistroEntrenamiento* buffer_registros, unsigned int* counter_train, int max_cap_train,
-                        DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red);
+                        DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red, bool modo_reconstruccion);
 
 void launchKernelRenderTiny(dim3 gridSize, dim3 blockSize,
                             const Camara* camara, const Primitiva* primitivas, int num_primitivas, const LuzPuntual* luces, int num_luces,
@@ -58,7 +58,7 @@ void launchKernelRenderTiny(dim3 gridSize, dim3 blockSize,
                             TinyBVHD_GPU nodos_bvh, const Primitiva* primitivas_bvh, int num_nodos_bvh,
                             ImagenGPU imagen_directa,
                             unsigned int* dev_counter, RegistroEntrenamiento* buffer_registros, unsigned int* counter_train, int max_cap_train,
-                            DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red);
+                            DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red, bool modo_reconstruccion);
 
 void launchKernelComposite(dim3 gridSize, dim3 blockSize,
                            Color* img_pt, Color* img_prediccion, Color* throughput_map,
