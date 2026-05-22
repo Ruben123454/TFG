@@ -165,7 +165,7 @@ public:
             }
 
             // Decidir si el rebote actual es parte del sufijo de entrenamiento o no, y capturar datos para la inferencia
-            if(es_difuso && !es_especular && footprint_suficiente) {
+            if(es_difuso && !es_especular && footprint_suficiente || modo_reconstruccion) {
                 Color reflectancia = primitiva_intersectada->difuso + primitiva_intersectada->especular + primitiva_intersectada->transmision;
                 float min_refl = 1e-3f; 
                 reflectancia.r = fmaxf(reflectancia.r, min_refl);
@@ -189,6 +189,9 @@ public:
                     datos_inf.especular = primitiva_intersectada->especular;
                     throughput_inf = camino * reflectancia;
                     necesita_inf = true;
+                    if(modo_reconstruccion){
+                        return Color(0,0,0);
+                    }
                     break; 
                 } else if (es_ruta_entrenamiento && !punto_entrenamiento_encontrado) { // Capturar datos para entrenamiento
                     registro_train.head.posicion = punto_interseccion; 
@@ -203,11 +206,10 @@ public:
                 }
             }
 
-            // Luz indirecta - omitir si es modo reconstrucción
-            if(!modo_reconstruccion) {
-                calcularLuzIndirecta(rng_seed, rayo_actual, camino, r_inicial, 
-                                punto_interseccion, normal, primitiva_intersectada, current_ior, pdf_ultimo_rebote, ultimo_fue_especular);
-            }
+            // Luz indirecta
+            calcularLuzIndirecta(rng_seed, rayo_actual, camino, r_inicial, 
+                            punto_interseccion, normal, primitiva_intersectada, current_ior, pdf_ultimo_rebote, ultimo_fue_especular);
+            
 
             // Ruleta rusa
             if(profundidad > 10) {
