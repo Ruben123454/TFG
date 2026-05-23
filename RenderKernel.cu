@@ -35,6 +35,7 @@ __global__ void kernelRender_tiny(const Camara* camara, const Primitiva* primiti
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
+    if (x < ancho_img && y < alto_img) {
         Escenario escena(const_cast<Primitiva*>(primitivas), num_primitivas, const_cast<LuzPuntual*>(luces), num_luces,
                         const_cast<Primitiva*>(primitivas_malla), num_primitivas_malla, nodos_bvh, primitivas_bvh, num_nodos_bvh);
         Render renderer(0.9, samples_per_pixel);
@@ -43,6 +44,7 @@ __global__ void kernelRender_tiny(const Camara* camara, const Primitiva* primiti
                 imagen_directa, frame_number,
                 dev_counter, buffer_registros, counter_train, max_cap_train,
                 buffer_inference, buffer_throughput, usar_red_inferencia, entrenar_red, modo_reconstruccion);
+    }
     
 }
 
