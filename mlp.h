@@ -13,9 +13,6 @@
 #include <tiny-cuda-nn/trainer.h>
 #include "mlp_types.h"
 
-// Precisión mixta (Half) para RTX
-using network_precision_t = __half;
-
 class ColorMLP {
 public:
 
