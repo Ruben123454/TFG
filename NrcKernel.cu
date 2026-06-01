@@ -4,7 +4,7 @@
 
 __device__ float normalize_coord(float val, float min, float max) {
     float normalized = (val - min) / (max - min);
-    return fminf(fmaxf(normalized, 0.0f), 1.0f);
+    return fminf(fmaxf(normalized, 0.0f), 0.9999f);
 }
 
 __global__ void generarIndicesAleatorios(int* indices, int max_range, int count, unsigned int seed) {

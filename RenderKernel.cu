@@ -115,14 +115,16 @@ __global__ void kernelCalcularTargets(
     Color radiance_total = reg.luz_acumulada_sufijo + (reg.throughput_sufijo * iluminacion_tail);
     Color denominador = reg.factor_normalizacion;
 
-    float safe_eps = 1e-8f;
+    // Epsilon para evitar que divisiones por throughputs pequeños generen números gigantes
+    float safe_eps = 1e-8f; 
 
     Color target_final;
     target_final.r = radiance_total.r / fmaxf(denominador.r, safe_eps);
     target_final.g = radiance_total.g / fmaxf(denominador.g, safe_eps);
     target_final.b = radiance_total.b / fmaxf(denominador.b, safe_eps);
 
-    float max_radiance = 100000.0f;
+    // Evitar que la red aprenda de picos extremos (fireflies)
+    float max_radiance = 5000.0f;
     target_final.r = fminf(target_final.r, max_radiance);
     target_final.g = fminf(target_final.g, max_radiance);
     target_final.b = fminf(target_final.b, max_radiance);
@@ -130,7 +132,7 @@ __global__ void kernelCalcularTargets(
     if (isnan(target_final.r) || isinf(target_final.r)) target_final.r = 0.0f;
     if (isnan(target_final.g) || isinf(target_final.g)) target_final.g = 0.0f;
     if (isnan(target_final.b) || isinf(target_final.b)) target_final.b = 0.0f;
-
+    
     DatosMLP d;
     d.posicion = reg.head.posicion;
     d.direccion = reg.head.direccion;

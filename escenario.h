@@ -142,8 +142,7 @@ public:
     }
 
     __device__ Color calcularLuzDirecta(const Vector3d& punto, const Vector3d& normal,
-                                       const Primitiva* objeto_intersectado,
-                                       int px, int py, double tiempo_acumulado, const Color& camino, double current_ior) const {
+                                       const Primitiva* objeto_intersectado) const {
         Color L_directa(0, 0, 0);
         
         for (int i = 0; i < num_luces; i++) {
@@ -165,14 +164,29 @@ public:
             // Verificar si el rayo sombra está bloqueado
             float u, v;
             //if (intersecta(rayo_sombra, t_sombra, &objeto_sombra)) { // Sin BVH
-            if (intersectaPrimitivasBVH(rayo_sombra, t_sombra, &objeto_sombra, u, v)) {
+            if (intersectaPrimitivasBVH_tiny(rayo_sombra, t_sombra, &objeto_sombra, u, v)) {
                 if (t_sombra < distancia) {
                     continue; // La luz está bloqueada
                 }
             }
             
-            Color brdf = objeto_intersectado->difuso / M_PI;
-            
+            Color k_d = objeto_intersectado->difuso;
+            Color k_s = objeto_intersectado->especular;
+            Color k_t = objeto_intersectado->transmision;
+
+            double max_kd = k_d.max();
+            double max_ks = k_s.max();
+            double max_kt = k_t.max();
+            double suma_max = max_kd + max_ks + max_kt;
+
+            Color brdf(0, 0, 0);
+            if (suma_max > 0.0) {
+                // Ponderamos la BRDF difusa por la probabilidad real de que el 
+                // material responda de forma difusa en lugar de especular/transmisión
+                double p_difuso = max_kd / suma_max; 
+                brdf = (k_d / M_PI) * p_difuso; 
+            }
+                        
             distancia = max(distancia, 1.0f); // Evitar división por cero (solución luciérnagas)
             Color Li = luz->intensidad / (distancia * distancia);
             
