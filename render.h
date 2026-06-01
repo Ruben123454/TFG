@@ -230,7 +230,7 @@ public:
             
 
             // Ruleta rusa
-            if(profundidad > 10) {
+            if(profundidad > 4) {
                 double prob = fmax(camino.r, fmax(camino.g, camino.b));
                 if (prob > 0.95) prob = 0.95;
                 if (pcg32_float(rng_seed) > prob) {
