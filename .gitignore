@@ -45,3 +45,4 @@
 
 # Generated
 /output/
+*.png
