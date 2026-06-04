@@ -17,7 +17,7 @@
 #include "mlp_types.h"
 #include "rng.h"
 
-const float pi = 3.14159265358979323846f;
+static constexpr float pi = 3.14159265358979323846f;
 
 class Render {
 public:

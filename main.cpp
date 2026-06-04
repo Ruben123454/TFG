@@ -27,6 +27,9 @@
 #include <thread>
 #include <cstring>
 #include <cfloat>
+#include <iomanip>
+#include <filesystem>
+#include <atomic>
 #include <memory>
 #include <cmath>
 #include <cuda_runtime.h>
@@ -49,6 +52,9 @@
 
 using namespace std;
 
+constexpr size_t NRC_SAMPLE_DUMP_CAP          = 200000000; // ~15.2 GB
+constexpr int    NRC_SAMPLE_DUMP_FLOATS        = 19;        // pos3+t+dir3+n3+albedo6+target3
+constexpr size_t NRC_SAMPLE_DUMP_WARMUP_STEPS  = 500;
 // Estructura para retornar resultados del renderizado
 struct RenderResult {
     vector<Color> acumulador_cpu;
@@ -1739,6 +1745,12 @@ int main() {
         cout << "[MLP] Red inicializada." << endl;
         ofstream loss_file("loss_log.txt");
 
+        std::filesystem::create_directories("../output/data");
+        ofstream sample_dump("../output/data/train_samples.f32", std::ios::binary);
+        size_t sample_dump_written = 0;
+        size_t sample_dump_steps   = 0;
+        vector<DatosMLP> sample_dump_host;
+
         int frames_acumulados_reales = 0;
 
         // Mostrar la ventana de render
@@ -1934,6 +1946,30 @@ int main() {
                 
                 cudaDeviceSynchronize();
 
+                ++sample_dump_steps;
+                if (sample_dump && sample_dump_steps > NRC_SAMPLE_DUMP_WARMUP_STEPS &&
+                    sample_dump_written < NRC_SAMPLE_DUMP_CAP && n_train_host > 0) {
+                    const unsigned int n_write = (unsigned int)std::min(
+                        (size_t)n_train_host, NRC_SAMPLE_DUMP_CAP - sample_dump_written);
+                    sample_dump_host.resize(n_write);
+                    cudaMemcpy(sample_dump_host.data(), d_buffer_train_final,
+                               (size_t)n_write * sizeof(DatosMLP), cudaMemcpyDeviceToHost);
+                    for (unsigned int i = 0; i < n_write; ++i) {
+                        const DatosMLP& d = sample_dump_host[i];
+                        const float row[NRC_SAMPLE_DUMP_FLOATS] = {
+                            (float)d.posicion.x, (float)d.posicion.y, (float)d.posicion.z,
+                            d.tiempo,
+                            (float)d.direccion.x, (float)d.direccion.y, (float)d.direccion.z,
+                            (float)d.normal.x, (float)d.normal.y, (float)d.normal.z,
+                            d.difuso.r, d.difuso.g, d.difuso.b,
+                            d.especular.r, d.especular.g, d.especular.b,
+                            d.color.r, d.color.g, d.color.b
+                        };
+                        sample_dump.write(reinterpret_cast<const char*>(row), sizeof(row));
+                    }
+                    sample_dump_written += n_write;
+                }
+
                 runtime_state.trainingLoss = mlp->train_step(d_buffer_train_final, n_train_host);
                 
                 // Guardar loss
@@ -1978,6 +2014,38 @@ int main() {
         cout << "=================================================" << endl;
         cout << "Tiempo de renderizado GPU: " << duracion.count() << " ms" << endl;
         loss_file.close();
+
+        if (sample_dump) {
+            sample_dump.close();
+            ofstream sample_meta("../output/data/train_samples.json");
+            if (sample_meta) {
+                sample_meta << std::setprecision(12);
+                sample_meta << "{\n"
+                    << "  \"dtype\": \"float32\",\n"
+                    << "  \"count\": " << sample_dump_written << ",\n"
+                    << "  \"floats_per_row\": " << NRC_SAMPLE_DUMP_FLOATS << ",\n"
+                    << "  \"only_positives\": true,\n"
+                    << "  \"warmup_steps\": " << NRC_SAMPLE_DUMP_WARMUP_STEPS << ",\n"
+                    << "  \"train_steps_seen\": " << sample_dump_steps << ",\n"
+                    << "  \"columns\": [\"pos_x\",\"pos_y\",\"pos_z\",\"t\","
+                       "\"dir_x\",\"dir_y\",\"dir_z\",\"n_x\",\"n_y\",\"n_z\","
+                       "\"kd_r\",\"kd_g\",\"kd_b\",\"ks_r\",\"ks_g\",\"ks_b\","
+                       "\"target_log_r\",\"target_log_g\",\"target_log_b\"],\n"
+                    << "  \"notes\": \"pos & t are raw; normalize as (v-min)/(max-min) to match the net. dir/normal already in [0,1]. target = log(1 + L).\",\n"
+                    << "  \"nrc_target_scale\": 1.0,\n"
+                    << "  \"bounds_min\": [" << scene_bounds.min.x << ", " << scene_bounds.min.y << ", " << scene_bounds.min.z << "],\n"
+                    << "  \"bounds_max\": [" << scene_bounds.max.x << ", " << scene_bounds.max.y << ", " << scene_bounds.max.z << "],\n"
+                    << "  \"t_min\": " << scene_bounds.t_min << ",\n"
+                    << "  \"t_max\": " << scene_bounds.t_max << "\n"
+                    << "}\n";
+            }
+            cout << "[SampleDump] " << sample_dump_written
+                 << " muestras positivas -> ../output/data/train_samples.f32 (+ .json)";
+            if (sample_dump_written >= NRC_SAMPLE_DUMP_CAP) {
+                cout << " [tope NRC_SAMPLE_DUMP_CAP alcanzado]";
+            }
+            cout << endl;
+        }
 
         if(runtime_state.saveMlpModel) {
             mlp->save_model("mlp_model.json");

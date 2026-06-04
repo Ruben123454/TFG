@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.18)
 
 project(raytracer LANGUAGES C CXX CUDA)
 
+add_compile_definitions(_USE_MATH_DEFINES)
+
 # FORZAR ARQUITECTURA
 set(CMAKE_CUDA_ARCHITECTURES 89)
 set(TCNN_CUDA_ARCHITECTURES 89)
@@ -28,8 +30,10 @@ set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=-D_AMXTILEINTRIN_H_INCLUDED
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=-D_AMXINT8INTRIN_H_INCLUDED")
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=-D_AMXBF16INTRIN_H_INCLUDED")
 
-string(REPLACE "-Wpedantic" "" CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS}")
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=-Wno-pedantic")
+if(NOT MSVC)
+    string(REPLACE "-Wpedantic" "" CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS}")
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=-Wno-pedantic")
+endif()
 
 # ----------------------------
 # tiny-cuda-nn
@@ -41,10 +45,11 @@ set(TCNN_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(TCNN_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../tiny-cuda-nn")
 add_subdirectory("${TCNN_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/tiny-cuda-nn-build")
 
-# Suprimir warnings de terceros en tiny-cuda-nn
-set_target_properties(tiny-cuda-nn PROPERTIES
-    COMPILE_FLAGS "-Wno-stringop-overread"
-)
+if(NOT MSVC)
+    set_target_properties(tiny-cuda-nn PROPERTIES
+        COMPILE_FLAGS "-Wno-stringop-overread"
+    )
+endif()
 
 # ----------------------------
 # Librerías externas

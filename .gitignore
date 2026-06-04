@@ -42,3 +42,7 @@
 
 # Build directory
 /build/
+
+# Generated
+/output/
+*.png
