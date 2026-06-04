@@ -27,8 +27,6 @@
 #include <thread>
 #include <cstring>
 #include <cfloat>
-#include <iomanip>
-#include <atomic>
 #include <memory>
 #include <cmath>
 #include <cuda_runtime.h>
@@ -47,8 +45,17 @@
 #include "visualizador.h"
 #include "tinybvh_wrapper.h"
 #include "RenderKernel.h"
+#include "gridsearch.h"
 
 using namespace std;
+
+// Estructura para retornar resultados del renderizado
+struct RenderResult {
+    vector<Color> acumulador_cpu;
+    int num_samples;
+    int ancho_imagen;
+    int alto_imagen;
+};
 
 // Combinar escena manual con modelo cargado
 void combinarEscenas(Primitiva** d_primitivas, int* num_primitivas, LuzPuntual** d_luces, int* num_luces) {
@@ -179,6 +186,7 @@ void inicializarEscena(Primitiva** d_primitivas, int* num_primitivas, LuzPuntual
     luz_techo.intensidad = Color(100, 100, 100);
     host_luces.push_back(luz_techo);
     
+    /*
     // Pared izquierda (cian)
     Primitiva pared_izq = {};
     pared_izq.tipo = PLANO;
@@ -239,7 +247,6 @@ void inicializarEscena(Primitiva** d_primitivas, int* num_primitivas, LuzPuntual
     pared_fondo.indice_refraccion = 1.0f;
     host_primitivas.push_back(pared_fondo);
 
-    /*
     // Esfera cristal Grande (Izquierda - Muy Cerca)
     Primitiva s1 = {};
     s1.tipo = ESFERA;
@@ -326,8 +333,132 @@ void inicializarEscena(Primitiva** d_primitivas, int* num_primitivas, LuzPuntual
     s7.transmision = Color(0,0,0);
     s7.indice_refraccion = 1.0f;
     host_primitivas.push_back(s7);
-    */
+    
 
+    
+    // Pared izquierda (turquesa suave)
+    Primitiva pared_izq = {};
+    pared_izq.tipo = PLANO;
+    pared_izq.plano.normal = Vector3d(1, 0, 0);
+    pared_izq.plano.distancia = -3.0f;
+    pared_izq.emision = Color(0,0,0);
+    pared_izq.difuso = Color(0.25f, 0.75f, 0.80f);
+    pared_izq.especular = Color(0,0,0);
+    pared_izq.transmision = Color(0,0,0);
+    pared_izq.indice_refraccion = 1.0f;
+    host_primitivas.push_back(pared_izq);
+    
+    // Pared derecha (coral suave)
+    Primitiva pared_der = {};
+    pared_der.tipo = PLANO;
+    pared_der.plano.normal = Vector3d(-1, 0, 0);
+    pared_der.plano.distancia = -3.0f;
+    pared_der.emision = Color(0,0,0);
+    pared_der.difuso = Color(0.85f, 0.45f, 0.35f);
+    pared_der.especular = Color(0,0,0);
+    pared_der.transmision = Color(0,0,0);
+    pared_der.indice_refraccion = 1.0f;
+    host_primitivas.push_back(pared_der);
+    
+    // Suelo
+    Primitiva suelo = {};
+    suelo.tipo = PLANO;
+    suelo.plano.normal = Vector3d(0, 1, 0);
+    suelo.plano.distancia = -3.0f;
+    suelo.emision = Color(0,0,0);
+    suelo.difuso = Color(0.78f, 0.76f, 0.72f);
+    suelo.especular = Color(0,0,0);
+    suelo.transmision = Color(0,0,0);
+    suelo.indice_refraccion = 1.0f;
+    host_primitivas.push_back(suelo);
+    
+    // Techo
+    Primitiva techo = {};
+    techo.tipo = PLANO;
+    techo.plano.normal = Vector3d(0, -1, 0);
+    techo.plano.distancia = -3.0f;
+    techo.emision = Color(0, 0, 0);
+    techo.difuso = Color(0.82f, 0.84f, 0.88f);
+    techo.especular = Color(0,0,0);
+    techo.transmision = Color(0,0,0);
+    techo.indice_refraccion = 1.0f;
+    host_primitivas.push_back(techo);
+    
+    // Pared fondo
+    Primitiva pared_fondo = {};
+    pared_fondo.tipo = PLANO;
+    pared_fondo.plano.normal = Vector3d(0, 0, 1);
+    pared_fondo.plano.distancia = -8.0f;
+    pared_fondo.emision = Color(0,0,0);
+    pared_fondo.difuso = Color(0.75f, 0.78f, 0.80f);
+    pared_fondo.especular = Color(0,0,0);
+    pared_fondo.transmision = Color(0,0,0);
+    pared_fondo.indice_refraccion = 1.0f;
+    host_primitivas.push_back(pared_fondo);
+
+    // Esfera difusa roja (Derecha Arriba - Flotando)
+    Primitiva s2 = {};
+    s2.tipo = ESFERA;
+    s2.esfera.centro = Vector3d(1.8f, 1.5f, -4.5f);
+    s2.esfera.radio = 0.8f;
+    s2.emision = Color(0,0,0);
+    s2.difuso = Color(0.82f, 0.18f, 0.18f);
+    s2.especular = Color(0,0,0);
+    s2.transmision = Color(0,0,0);
+    s2.indice_refraccion = 1.0f;
+    host_primitivas.push_back(s2);
+
+    // Esfera difusa (Centro Abajo - Cerca)
+    Primitiva s3 = {};
+    s3.tipo = ESFERA;
+    s3.esfera.centro = Vector3d(0.2f, -2.2f, -4.0f);
+    s3.esfera.radio = 0.7f;
+    s3.emision = Color(0,0,0);
+    s3.difuso = Color(0.3f, 0.5f, 0.2f);
+    s3.especular = Color(0,0,0);
+    s3.transmision = Color(0,0,0);
+    s3.indice_refraccion = 1.0f;
+    host_primitivas.push_back(s3);
+
+    // Esfera difusa verde (Izquierda Arriba - Medio)
+    Primitiva s4 = {};
+    s4.tipo = ESFERA;
+    s4.esfera.centro = Vector3d(-1.2f, 1.8f, -5.0f); 
+    s4.esfera.radio = 0.6f;
+    s4.emision = Color(0,0,0);
+    s4.difuso = Color(0.2f, 0.8f, 0.2f);
+    s4.especular = Color(0,0,0);
+    s4.transmision = Color(0,0,0);
+    s4.indice_refraccion = 1.0f;
+    host_primitivas.push_back(s4);
+
+    // Esfera difusa azul (moved to where the large white sphere was)
+    Primitiva s6 = {};
+    s6.tipo = ESFERA;
+    // Moved to previous white sphere position
+    s6.esfera.centro = Vector3d(-1.5f, -1.0f, -3.8f);
+    s6.esfera.radio = 0.6f;
+    s6.emision = Color(0,0,0);
+    s6.difuso = Color(0.1f, 0.1f, 0.9f);
+    s6.especular = Color(0,0,0);
+    s6.transmision = Color(0,0,0);
+    s6.indice_refraccion = 1.0f;
+    host_primitivas.push_back(s6);
+    
+    
+    // Esfera difusa amarilla (Derecha - Fondo medio)
+    Primitiva s7 = {};
+    s7.tipo = ESFERA;
+    s7.esfera.centro = Vector3d(1.0f, -0.5f, -5.5f); 
+    s7.esfera.radio = 0.9f;
+    s7.emision = Color(0,0,0);
+    s7.difuso = Color(0.9f, 0.8f, 0.2f);
+    s7.especular = Color(0,0,0);
+    s7.transmision = Color(0,0,0);
+    s7.indice_refraccion = 1.0f;
+    host_primitivas.push_back(s7);
+    */
+   
     // Copiar las primitivas a la GPU
     cudaMalloc(d_primitivas, host_primitivas.size() * sizeof(Primitiva));
     cudaMemcpy(*d_primitivas, host_primitivas.data(), host_primitivas.size() * sizeof(Primitiva), 
@@ -569,16 +700,375 @@ bool moverCamara(GLFWwindow* window, Camara* d_camara, float delta_time_s, float
     return err == cudaSuccess;
 }
 
+// Guardar imagen final y renders transitorios
+void guardarResultadosRenderizado(const RenderResult& result, const string& nombre_archivo,
+                                   TransientRender* transientRenderer, bool activar_transient,
+                                   const RenderGuiState& runtime_state, const string& tone_mapping_mode = "filmic",
+                                   bool shouldSave = true,
+                                   bool saveFramesPng = true,
+                                   bool saveFramesBin = true,
+                                   bool saveFramesBinAllFrames = false,
+                                   bool saveTransientVolume = true) {
+    if (!shouldSave) {
+        return;
+    }
+    
+    int num_pixels = result.ancho_imagen * result.alto_imagen;
+    
+    cout << "Guardando imagen en: " << nombre_archivo << endl;
+
+    // Crear imagen final promediada por número de muestras
+    Imagen imagen_final(result.ancho_imagen, result.alto_imagen);
+    float inv_samples = 1.0f / (float)result.num_samples;
+    for (int i = 0; i < num_pixels; ++i) {
+        imagen_final.datos[i] = result.acumulador_cpu[i] * inv_samples;
+    }
+
+    // Aplicar tone mapping según el modo
+    Imagen imagen_final_tone_mapping(result.ancho_imagen, result.alto_imagen);
+    if (tone_mapping_mode == "reinhard") {
+        imagen_final_tone_mapping = imagen_final.reinhard().gamma();
+    } else {
+        imagen_final_tone_mapping = imagen_final.filmic();
+    }
+
+    // Guardar imagen
+    if (guardarPNG(imagen_final_tone_mapping, nombre_archivo.c_str())) {
+        cout << "Imagen guardada como: " << nombre_archivo << endl;
+    } else {
+        cout << "Error al guardar la imagen" << endl;
+    }
+
+    if (activar_transient) {
+        const float transient_exposicion_min = 10.0f;
+        const float transient_exposicion_max = 20.0f;
+        
+        string base_nombre = nombre_archivo;
+        size_t pos_ext = base_nombre.rfind('.');
+        if (pos_ext != string::npos) base_nombre = base_nombre.substr(0, pos_ext);
+
+        std::string transient_dir = runtime_state.transientOutputPath;
+        if (!transient_dir.empty() && transient_dir.back() != '/') {
+            transient_dir += '/';
+        }
+
+        bool skipped_bin_due_to_tone = false;
+        bool failed_bin_open = false;
+        bool write_single_hdr_bin = false;
+        std::string nombre_bin_unico;
+        std::ofstream hdr_bin_file;
+        bool any_transient_output = saveFramesPng || saveFramesBin || saveFramesBinAllFrames || saveTransientVolume;
+
+        if (any_transient_output) {
+            if (saveFramesBinAllFrames) {
+                // Guardar toda la secuencia HDR en un único .bin
+                if (tone_mapping_mode == "filmic") {
+                    nombre_bin_unico = transient_dir + base_nombre + "_GT_HDR_all_frames.bin";
+                    hdr_bin_file.open(nombre_bin_unico, std::ios::binary);
+                    if (!hdr_bin_file.is_open()) {
+                        failed_bin_open = true;
+                    } else {
+                        write_single_hdr_bin = true;
+                    }
+                } else {
+                    skipped_bin_due_to_tone = true;
+                }
+            }
+
+            if (saveFramesPng || saveFramesBin || saveFramesBinAllFrames) {
+                for (int i = 0; i < transientRenderer->num_frames; ++i) {
+                    vector<Color> buffer_host = transientRenderer->obtenerFrameHost(i, result.num_samples);
+
+                    if (write_single_hdr_bin) {
+                        for (int k = 0; k < num_pixels; k++) {
+                            Color c_real = buffer_host[k];
+                            hdr_bin_file.write(reinterpret_cast<const char*>(&c_real.r), sizeof(float));
+                            hdr_bin_file.write(reinterpret_cast<const char*>(&c_real.g), sizeof(float));
+                            hdr_bin_file.write(reinterpret_cast<const char*>(&c_real.b), sizeof(float));
+                        }
+                    }
+
+                    if (saveFramesBin) {
+                        // Guardar también un BIN por frame
+                        if (tone_mapping_mode == "filmic") {
+                            string nombre_bin = transient_dir + base_nombre + "_" + to_string(i) + "_GT_HDR.bin";
+                            std::ofstream outFile(nombre_bin, std::ios::binary);
+                            for (int k = 0; k < num_pixels; k++) {
+                                Color c_real = buffer_host[k];
+                                outFile.write(reinterpret_cast<const char*>(&c_real.r), sizeof(float));
+                                outFile.write(reinterpret_cast<const char*>(&c_real.g), sizeof(float));
+                                outFile.write(reinterpret_cast<const char*>(&c_real.b), sizeof(float));
+                            }
+                            outFile.close();
+                        } else {
+                            skipped_bin_due_to_tone = true;
+                        }
+                    }
+
+                    if (saveFramesPng) {
+                        Imagen img_temp(result.ancho_imagen, result.alto_imagen);
+
+                            float max_brillo = 1e-6f;
+                            float sum_brillo = 0.0f;
+                            for(int k = 0; k < num_pixels; k++) {
+                                Color c_real = buffer_host[k];
+                                
+                                float brillo_pixel = max(c_real.r, max(c_real.g, c_real.b)); 
+                                if (brillo_pixel > max_brillo) {
+                                    max_brillo = brillo_pixel;
+                                }
+                                sum_brillo += brillo_pixel;
+                            }
+
+                            // Exposición adaptativa: combina máximo y promedio para evitar quemar primeros frames
+                            float avg_brillo = sum_brillo / num_pixels;
+                            float ref_brillo = max_brillo * 0.6f + avg_brillo * 0.4f; // 60% peso al pico de luz, 40% al promedio
+                            float exposure = 1.0f / max(ref_brillo, 1e-6f);
+                            exposure = min(exposure, 160.0f);
+                            
+                            // Boost suave solo para frames muy apagados (transient tardío)
+                            float exposureBoost = (avg_brillo < 0.001f) ? 1.3f : 1.0f;
+
+                            for(int k = 0; k < num_pixels; k++) {
+                                img_temp.datos[k] = buffer_host[k] * exposure * exposureBoost;
+                            }
+
+                            string nombre_png = transient_dir + base_nombre + "_" + to_string(i) + ".png";
+                            // Tone mapping conservador
+                            Imagen res = img_temp.exponentialToneMapping(0.8f).filmic().gamma();
+                            guardarPNG(res, nombre_png.c_str());
+                            
+                    }
+                }
+            }
+
+            if (hdr_bin_file.is_open()) {
+                hdr_bin_file.close();
+            }
+
+            if (saveTransientVolume) {
+                // Guardar radiancia de cada píxel en archivo binario
+                std::ofstream radiance_file(transient_dir + "transient_radiancia.bin", std::ios::binary);
+                for (int i = 0; i < transientRenderer->num_frames; ++i) {
+                    vector<Color> buffer_host = transientRenderer->obtenerFrameHost(i, result.num_samples);
+                    for(int k = 0; k < num_pixels; k++) {
+                        // Guardar la intensidad (luminancia)
+                        float luminancia = (buffer_host[k].r + buffer_host[k].g + buffer_host[k].b) / 3.0f;
+                        radiance_file.write(reinterpret_cast<const char*>(&luminancia), sizeof(float));
+                    }
+                }
+                radiance_file.close();
+            }
+
+            if (saveFramesPng) {
+                cout << "Frames transient (PNG) guardados en: '" << runtime_state.transientOutputPath << "'" << endl;
+            }
+            if (saveFramesBin) {
+                if (skipped_bin_due_to_tone) {
+                    cout << "Frames BIN omitidos (solo disponibles en modo filmic)." << endl;
+                } else {
+                    cout << "Frames Ground Truth HDR (BIN por frame) guardados en: '" << runtime_state.transientOutputPath << "'" << endl;
+                }
+            }
+            if (saveFramesBinAllFrames) {
+                if (skipped_bin_due_to_tone) {
+                    cout << "BIN único omitido (solo disponible en modo filmic)." << endl;
+                } else if (failed_bin_open) {
+                    cout << "Error al abrir el archivo BIN HDR único para escritura." << endl;
+                } else {
+                    cout << "Frame Ground Truth HDR (BIN único) guardado en: '" << nombre_bin_unico << "'" << endl;
+                }
+            }
+            if (saveTransientVolume) {
+                cout << "Transient volume guardado en: '" << runtime_state.transientOutputPath << "'" << endl;
+            }
+        } else {
+            cout << "No se seleccionaron salidas transient para guardar." << endl;
+        }
+    } else {
+        cout << "Render transitorio desactivado, no se guardan frames transient." << endl;
+    }
+}
+
+// Renderizar usando solo pathtracer sin entrenamiento ni inferencia (modo pathtracer puro)
+RenderResult renderizarModoPathtracerPuro(int ancho_imagen, int alto_imagen, string nombre_archivo,
+                                   int samples_per_pixel,
+                                   Camara* d_camara, Primitiva* d_primitivas, int num_primitivas,
+                                   LuzPuntual* d_luces, int num_luces, TinyBVH& bvh_modelo_tiny,
+                                   Primitiva* d_primitivas_malla, int num_primitivas_malla,
+                                   const SceneBounds& scene_bounds,
+                                   TransientRender* transientRenderer, double t_final, bool activar_transient,
+                                   Visualizador* ventana, RenderGuiState& runtime_state) {
+    int num_pixels = ancho_imagen * alto_imagen;
+    if (samples_per_pixel < 1) samples_per_pixel = 1;
+    
+    cout << "\n=================================================" << endl;
+    cout << "====      MODO PATHTRACER PURO               ====" << endl;
+    cout << "====    (Sin entrenamiento ni inferencia)     ====" << endl;
+    cout << "=================================================" << endl;
+
+    // Configurar grid y blocks
+    dim3 blockSize(16, 16);
+    dim3 gridSize((ancho_imagen + blockSize.x - 1) / blockSize.x, 
+                  (alto_imagen + blockSize.y - 1) / blockSize.y);
+
+    Color* d_imagen_data = nullptr;
+    cudaMalloc(&d_imagen_data, num_pixels * sizeof(Color));
+    cudaMemset(d_imagen_data, 0, num_pixels * sizeof(Color));
+
+    ImagenGPU imagen(ancho_imagen, alto_imagen, d_imagen_data);
+    vector<Color> acumulador_cpu(num_pixels, Color(0,0,0));
+    vector<Color> frame_cpu(num_pixels);
+
+    if (ventana == nullptr) {
+        cerr << "[UI] Ventana no válida en modo pathtracer puro." << endl;
+        cudaFree(d_imagen_data);
+        return RenderResult{};
+    }
+
+    runtime_state.warmupActive = false;
+    runtime_state.pauseRendering = false;
+    runtime_state.resetAccumulation = false;
+	runtime_state.trainingSamplesLastStep = 0;
+
+    ventana->actualizar(acumulador_cpu, 1);
+
+    cout << "\nLanzando rayos (Pathtracer puro)..." << endl;
+    cout << "Muestras por píxel: " << samples_per_pixel << endl;
+
+    auto inicio = chrono::high_resolution_clock::now();
+    auto render_inicio = chrono::high_resolution_clock::now();
+    auto last_input_time = chrono::high_resolution_clock::now();
+    int sample_actual = 0;
+    int iteracion = 0;
+
+    while (sample_actual < samples_per_pixel && ventana->procesarEventos()) {
+        iteracion++;
+
+        // FPS y tiempo estimado
+        if (sample_actual % 60 == 0) {
+            // FPS
+            float frameTimeSec = runtime_state.lastFrameMs / 1000.0f;
+            if (frameTimeSec > 0.0f) {
+                runtime_state.lastFPS = 1.0f / frameTimeSec;
+            } else {
+                runtime_state.lastFPS = 0.0f;
+            }
+
+            // Tiempo restante
+            int spp_restantes = samples_per_pixel - sample_actual;
+            float fps = runtime_state.lastFPS;
+            int segundos_restantes = 0;
+            if (fps > 0.0f && spp_restantes > 0) {
+                segundos_restantes = (int)std::round((float)spp_restantes / fps);
+            }
+            if (segundos_restantes < 0){
+                segundos_restantes = 0;
+            }
+            runtime_state.estHours = segundos_restantes / 3600;
+            runtime_state.estMinutes = (segundos_restantes % 3600) / 60;
+            runtime_state.estSeconds = (segundos_restantes % 60);
+        }
+
+        auto now_input = chrono::high_resolution_clock::now();
+        float dt_input = chrono::duration<float>(now_input - last_input_time).count();
+        last_input_time = now_input;
+
+        if (moverCamara(ventana->window, d_camara, dt_input)) {
+            runtime_state.resetAccumulation = true;
+        }
+
+        if (runtime_state.resetAccumulation) {
+            fill(acumulador_cpu.begin(), acumulador_cpu.end(), Color(0,0,0));
+            sample_actual = 0;
+            runtime_state.resetAccumulation = false;
+            render_inicio = chrono::high_resolution_clock::now();
+            if(activar_transient) {
+                transientRenderer->limpiarAcumulado();
+            }
+        }
+
+        if(runtime_state.configUpdate) {
+            samples_per_pixel = runtime_state.samplesPerPixel;
+            runtime_state.configUpdate = false;
+        }
+
+        if (runtime_state.pauseRendering) {
+            int muestras_gui = sample_actual > 0 ? sample_actual : 1;
+            ventana->actualizar(acumulador_cpu, muestras_gui);
+            std::this_thread::sleep_for(std::chrono::milliseconds(8));
+            continue;
+        }
+
+        auto frame_inicio = chrono::high_resolution_clock::now();
+        cudaMemset(d_imagen_data, 0, num_pixels * sizeof(Color));
+
+        // Lanzar kernel de renderizado solo pathtracer
+        // Sin inferencia, sin guardar de datos de entrenamiento
+        launchKernelRenderTiny(
+            gridSize, blockSize,
+            d_camara, d_primitivas, num_primitivas, d_luces, num_luces,
+            d_primitivas_malla, num_primitivas_malla, ancho_imagen, alto_imagen, 1, sample_actual,
+            bvh_modelo_tiny.obtenerDatosGPU(), bvh_modelo_tiny.getPrimitivasGPU(), bvh_modelo_tiny.getNumPrimitivas(),
+            imagen, *transientRenderer,
+            nullptr,
+            nullptr,
+            nullptr, 0,  // Sin guardar datos MLP (d_mlp_counter = nullptr, num_pixels = 0)
+            nullptr, nullptr,
+            false,  // usar_red_inferencia = false
+            false,  // entrenar_red = false
+            false  // modo_reconstruccion = false
+        );
+
+        cudaDeviceSynchronize();
+
+        // Acumulación y actualización de métricas de frame
+        auto frame_fin = chrono::high_resolution_clock::now();
+        runtime_state.lastFrameMs = chrono::duration<float, std::milli>(frame_fin - frame_inicio).count();
+        runtime_state.totalRenderMs = chrono::duration<float, std::milli>(frame_fin - render_inicio).count();
+
+        sample_actual++;
+
+        // Copiar imagen a CPU para visualización
+        cudaMemcpy(frame_cpu.data(), d_imagen_data, num_pixels * sizeof(Color), cudaMemcpyDeviceToHost);
+        
+        // Acumular
+        for (int i = 0; i < num_pixels; ++i) {
+            acumulador_cpu[i] = acumulador_cpu[i] + frame_cpu[i];
+        }
+
+        // Mostrar en interfaz gráfica
+        ventana->actualizar(acumulador_cpu, sample_actual);
+
+        auto fin = chrono::high_resolution_clock::now();
+        runtime_state.totalExecutionMs = chrono::duration<float, std::milli>(fin - inicio).count();
+    }
+
+    cout << "\nRenderizado completado." << endl;
+
+    // Liberar memoria
+    cudaFree(d_imagen_data);
+
+    auto fin = chrono::high_resolution_clock::now();
+    float tiempo_total = chrono::duration<float, std::milli>(fin - inicio).count();
+    cout << "\nTiempo total: " << tiempo_total / 1000.0f << " segundos" << endl;
+    cout << "Muestras renderizadas: " << sample_actual << endl;
+    cout << "Muestras por pixel acumuladas: " << sample_actual << endl;
+
+    return RenderResult{acumulador_cpu, sample_actual, ancho_imagen, alto_imagen};
+}
+
 // Renderizar usando la red neuronal para inferencia (modo reconstrucción)
-bool renderizarModoReconstruccion(int ancho_imagen, int alto_imagen, string nombre_archivo,
+RenderResult renderizarModoReconstruccion(int ancho_imagen, int alto_imagen, string nombre_archivo,
                                    const string& ruta_modelo_entrenado,
                                    int samples_per_pixel,
                                    Camara* d_camara, Primitiva* d_primitivas, int num_primitivas,
                                    LuzPuntual* d_luces, int num_luces, TinyBVH& bvh_modelo_tiny,
                                    Primitiva* d_primitivas_malla, int num_primitivas_malla,
                                    const SceneBounds& scene_bounds,
-                                   TransientRender* transientRenderer, double t_final, bool activar_transient, 
-                                   Visualizador* ventana, RenderGuiState& runtime_state) {
+                                   TransientRender* transientRenderer, double t_final, bool activar_transient,
+                                   Visualizador* ventana, RenderGuiState& runtime_state,
+                                   ColorMLP* mlp_entrenado = nullptr) {
     int num_pixels = ancho_imagen * alto_imagen;
     if (samples_per_pixel < 1) samples_per_pixel = 1;
     
@@ -590,12 +1080,20 @@ bool renderizarModoReconstruccion(int ancho_imagen, int alto_imagen, string nomb
     uint32_t n_in = 16;
     uint32_t n_out = 3;
     uint32_t batch_size_mlp = 65536;
-    auto mlp = std::make_unique<ColorMLP>(n_in, n_out, batch_size_mlp, config_ganadora);
-    mlp->setBounds(scene_bounds.min, scene_bounds.max, scene_bounds.t_min, scene_bounds.t_max);
 
-    if (!mlp->load_model(ruta_modelo_entrenado)) {
-        cerr << "[MLP] No se pudo cargar el modelo neuronal." << endl;
-        return false;
+    std::unique_ptr<ColorMLP> mlp;
+    
+    if(mlp_entrenado) {
+        cout << "[MLP] Usando modelo neuronal proporcionado en memoria." << endl;
+        mlp.reset(mlp_entrenado);
+    }
+    else{
+        mlp = std::make_unique<ColorMLP>(n_in, n_out, batch_size_mlp, config_ganadora);
+        mlp->setBounds(scene_bounds.min, scene_bounds.max, scene_bounds.t_min, scene_bounds.t_max);
+        if (!mlp->load_model(ruta_modelo_entrenado, samples_per_pixel)) {
+            cerr << "[MLP] No se pudo cargar el modelo neuronal." << endl;
+            return RenderResult{};
+        }
     }
 
     // Configurar grid y blocks
@@ -628,7 +1126,7 @@ bool renderizarModoReconstruccion(int ancho_imagen, int alto_imagen, string nomb
         cudaFree(d_buffer_inference_inputs);
         cudaFree(d_buffer_radiance_predicha);
         cudaFree(d_buffer_throughput);
-        return false;
+        return RenderResult{};
     }
 
     runtime_state.warmupActive = false;
@@ -654,8 +1152,6 @@ bool renderizarModoReconstruccion(int ancho_imagen, int alto_imagen, string nomb
     auto last_input_time = chrono::high_resolution_clock::now();
     int sample_actual = 0;
     int iteracion = 0;
-    // Para FPS y tiempo restante
-    int last_estimate_sample = -1;
 
     while (sample_actual < samples_per_pixel && ventana->procesarEventos()) {
         iteracion++;
@@ -734,7 +1230,7 @@ bool renderizarModoReconstruccion(int ancho_imagen, int alto_imagen, string nomb
             d_buffer_inference_inputs, d_buffer_throughput,
             true,   // usar_red_inferencia = true
             false,  // entrenar_red = false (solo inferencia)
-            true // Modo reconstruccion: obtener datos solo del primer rebote para inferir
+            true   // Modo reconstruccion: obtener datos solo del primer rebote para inferir
         );
 
         cudaDeviceSynchronize();
@@ -793,86 +1289,6 @@ bool renderizarModoReconstruccion(int ancho_imagen, int alto_imagen, string nomb
     cout << "=================================================" << endl;
     cout << "Tiempo total: " << duracion.count() << " ms" << endl;
 
-    // Crear imagen final promediada por número de muestras
-    Imagen imagen_final(ancho_imagen, alto_imagen);
-    float inv_samples = 1.0f / (float)samples_per_pixel;
-    for (int i = 0; i < num_pixels; i++) {
-        imagen_final.datos[i] = acumulador_cpu[i] * inv_samples;
-    }
-
-    cout << "\n==============================================" << endl;
-    cout << "====         GUARDANDO RESULTADOS         ====" << endl;
-    cout << "==============================================" << endl;
-
-    // Aplicar tone mapping
-    Imagen imagen_final_tone_mapping = imagen_final.reinhard().gamma();
-
-    // Guardar imagen
-    if (guardarPNG(imagen_final_tone_mapping, nombre_archivo.c_str())) {
-        cout << "Imagen guardada como: " << nombre_archivo << endl;
-    } else {
-        cout << "Error al guardar la imagen" << endl;
-    }
-
-    if (activar_transient) {
-        const float transient_exposicion_min = 10.0f;
-        const float transient_exposicion_max = 20.0f;
-        for (int i = 0; i < transientRenderer->num_frames; ++i) {
-            // Traer datos de GPU a CPU de forma segura
-            vector<Color> buffer_host = transientRenderer->obtenerFrameHost(i);
-
-            float alpha = 0.0f;
-            if (transientRenderer->num_frames > 1) {
-                alpha = (float)i / (float)(transientRenderer->num_frames - 1);
-            }
-            float exposure = transient_exposicion_min + alpha * (transient_exposicion_max - transient_exposicion_min);
-                
-            // Crear una imagen temporal en CPU para guardar
-            Imagen img_temp(ancho_imagen, alto_imagen);
-            // Copiar datos del vector al formato que use tu clase Imagen
-            for(int k=0; k<ancho_imagen*alto_imagen; k++) {
-                // Normalizar por el número de muestras
-                Color c = buffer_host[k] / samples_per_pixel;
-                c = c * exposure;
-                img_temp.datos[k] = c;
-            }
-                
-            // Quitar extensión del nombre si la tiene
-            string base_nombre = nombre_archivo;
-            size_t pos_ext = base_nombre.rfind('.');
-            if (pos_ext != string::npos) base_nombre = base_nombre.substr(0, pos_ext);
-            string nombre = "../transient/" + base_nombre + "_" + to_string(i) + ".png";
-            Imagen res = img_temp.gamma();
-            guardarPNG(res, nombre.c_str());
-        }
-        cout << "Imágenes transient guardadas en carpeta 'transient/'" << endl;
-    } else {
-        cout << "Render transitorio desactivado, no se guardan frames transient." << endl;
-    }
-
-    runtime_state.accumulatedSamples = sample_actual;
-    runtime_state.warmupActive = false;
-    runtime_state.pauseRendering = true;
-    runtime_state.renderingComplete = true;
-    runtime_state.requestSave = false;
-
-    while (runtime_state.renderingComplete && ventana->procesarEventos()) {
-        int muestras_gui = sample_actual > 0 ? sample_actual : 1;
-        ventana->actualizar(acumulador_cpu, muestras_gui);
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
-    }
-
-    if (runtime_state.requestSave) {
-        nombre_archivo = runtime_state.outputFileName;
-        if (guardarPNG(imagen_final_tone_mapping, nombre_archivo.c_str())) {
-            cout << "Imagen guardada como: " << nombre_archivo << endl;
-        } else {
-            cout << "Error al guardar la imagen" << endl;
-        }
-    } else {
-        cout << "Imagen no guardada." << endl;
-    }
-
     // Limpiar
     cudaFree(d_imagen_data);
     cudaFree(d_buffer_inference_inputs);
@@ -880,7 +1296,8 @@ bool renderizarModoReconstruccion(int ancho_imagen, int alto_imagen, string nomb
     cudaFree(d_buffer_throughput);
     cudaFree(d_mlp_counter);
 	cudaFree(d_nrc_stats);
-    return true;
+
+    return RenderResult{acumulador_cpu, sample_actual, ancho_imagen, alto_imagen};
 }
 
 int main() {
@@ -919,6 +1336,43 @@ int main() {
 
         if (!config_done) {
             cout << "Configuración cancelada por el usuario." << endl;
+            return 0;
+        }
+
+        // MODO MÉTRICAS
+        if (gui_state.renderMode == 5) {
+            std::string metrics_error;
+            MetricsResult metrics = calcularMetricasDesdeArchivos(
+                gui_state.metricsGroundTruthPath,
+                gui_state.metricsImagePath,
+                gui_state.imageWidth,
+                gui_state.imageHeight,
+                gui_state.metricMSE,
+                gui_state.metricMRSE,
+                gui_state.metricPSNR,
+                gui_state.metricSSIM,
+                metrics_error
+            );
+
+            if (!metrics_error.empty()) {
+                cerr << "[Metricas] Error: " << metrics_error << endl;
+                return 1;
+            }
+
+            gui_state.metricsComputed = true;
+            gui_state.metricsCalculationFailed = false;
+            gui_state.metricResultMSE = metrics.mse;
+            gui_state.metricResultMRSE = metrics.mrse;
+            gui_state.metricResultPSNR = metrics.psnr;
+            gui_state.metricResultSSIM = metrics.ssim;
+
+            imprimirResultadosMetricas(
+                metrics,
+                gui_state.metricMSE,
+                gui_state.metricMRSE,
+                gui_state.metricPSNR,
+                gui_state.metricSSIM
+            );
             return 0;
         }
 
@@ -1088,6 +1542,8 @@ int main() {
         // Escala de nanosegundos
         double t_start = 2.8e-8;
         double t_final = 9.8e-8;
+        //double t_start = 5.8e-8;
+        //double t_final = 7.0e-8;
         if(cargar_modelo) {
             /*
             t_start = 6.0e-8;
@@ -1115,28 +1571,123 @@ int main() {
         scene_bounds.t_min = 0.0f;
         scene_bounds.t_max = t_final * 1.01f;
 
+        // MODO GRID SEARCH
+        if (gui_state.renderMode == 4 || gui_state.runGridSearch) {
+            cout << "\n================================================" << endl;
+            cout << "====          EJECUTANDO GRID SEARCH        ====" << endl;
+            cout << "================================================" << endl;
+
+            try {
+                auto best_config = ejecutarGridSearch(
+                    ancho_imagen, alto_imagen,
+                    d_camara,
+                    *transientRenderer,
+                    d_primitivas, num_primitivas,
+                    d_luces, num_luces,
+                    d_primitivas_malla, num_primitivas_malla,
+                    bvh_modelo.getNodosGPU(),
+                    bvh_modelo.getPrimitivasGPU(),
+                    bvh_modelo.getNumNodos(),
+                    scene_bounds,
+                    gui_state.samplesPerPixel,
+                    runtime_state.groundTruthFolder
+                );
+
+                std::ofstream best_config_file("best_gridsearch_config.json");
+                best_config_file << best_config.dump(2);
+                best_config_file.close();
+
+                cout << "[GridSearch] Completado. Resultados en gridsearch_results.csv" << endl;
+                cout << "[GridSearch] Mejor config en best_gridsearch_config.json" << endl;
+            } catch (const std::exception& e) {
+                cerr << "[GridSearch] Error: " << e.what() << endl;
+                cudaFree(d_camara);
+                return 1;
+            }
+
+            cudaFree(d_camara);
+            return 0;
+        }
+
         // MODO RECONSTRUCCIÓN: Solo inferencia de MLP
         if (gui_state.renderMode == 1) {
-            if (!renderizarModoReconstruccion(ancho_imagen, alto_imagen, nombre_archivo, ruta_modelo_entrenado,
+            RenderResult result = renderizarModoReconstruccion(ancho_imagen, alto_imagen, nombre_archivo, ruta_modelo_entrenado,
                                          samples_per_pixel,
                                          d_camara, d_primitivas, num_primitivas, d_luces, num_luces,
                                          bvh_modelo_tiny, d_primitivas_malla, num_primitivas_malla,
                                          scene_bounds, transientRenderer, t_final, activar_transient,
-                                         ventana.get(), runtime_state)) {
-                return 1;
+                                         ventana.get(), runtime_state);
+            
+            if (result.num_samples > 0) {
+                cout << "\n=================================================" << endl;
+                cout << "====      RENDERIZADO FINALIZADO - ESPERANDO ====" << endl;
+                cout << "=================================================" << endl;
+                
+                RenderGuiState& post_state = ventana->uiState();
+                post_state.accumulatedSamples = result.num_samples;
+                post_state.warmupActive = false;
+                post_state.pauseRendering = true;
+                post_state.renderingComplete = true;
+                post_state.requestSave = false;
+
+                while (post_state.renderingComplete && ventana->procesarEventos()) {
+                    ventana->actualizar(result.acumulador_cpu, result.num_samples);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+                }
+
+                if (post_state.requestSave) {
+                    guardarResultadosRenderizado(result, nombre_archivo, transientRenderer, activar_transient, runtime_state, "reinhard", true,
+                                                post_state.saveFramesPng, post_state.saveFramesBin, post_state.saveFramesBinAllFrames, post_state.saveTransientVolume);
+                    cout << "Imagen guardada." << endl;
+                } else {
+                    cout << "Imagen no guardada." << endl;
+                }
             }
+            
+            cudaFree(d_camara);
+            return 0;
+        }
+
+        // MODO PATHTRACER PURO: Sin entrenamiento ni inferencia
+        if (gui_state.renderMode == 2) {
+            RenderResult result = renderizarModoPathtracerPuro(ancho_imagen, alto_imagen, nombre_archivo,
+                                         samples_per_pixel,
+                                         d_camara, d_primitivas, num_primitivas, d_luces, num_luces,
+                                         bvh_modelo_tiny, d_primitivas_malla, num_primitivas_malla,
+                                         scene_bounds, transientRenderer, t_final, activar_transient,
+                                         ventana.get(), runtime_state);
+            
+            if (result.num_samples > 0) {
+                cout << "\n=================================================" << endl;
+                cout << "====      RENDERIZADO FINALIZADO - ESPERANDO ====" << endl;
+                cout << "=================================================" << endl;
+                
+                RenderGuiState& post_state = ventana->uiState();
+                post_state.accumulatedSamples = result.num_samples;
+                post_state.warmupActive = false;
+                post_state.pauseRendering = true;
+                post_state.renderingComplete = true;
+                post_state.requestSave = false;
+
+                while (post_state.renderingComplete && ventana->procesarEventos()) {
+                    ventana->actualizar(result.acumulador_cpu, result.num_samples);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+                }
+
+                if (post_state.requestSave) {
+                    guardarResultadosRenderizado(result, nombre_archivo, transientRenderer, activar_transient, runtime_state, "filmic", true,
+                                                post_state.saveFramesPng, post_state.saveFramesBin, post_state.saveFramesBinAllFrames, post_state.saveTransientVolume);
+                    cout << "Imagen guardada." << endl;
+                } else {
+                    cout << "Imagen no guardada." << endl;
+                }
+            }
+            
             cudaFree(d_camara);
             return 0;
         }
 
         // MODO ENTRENAMIENTO: Path Tracing + MLP Training
-        tcnn::json config_ganadora;
-        //config_ganadora = ejecutarGridSearch(ancho_imagen, alto_imagen, d_camara, *transientRenderer, 
-        //                d_primitivas, num_primitivas, d_luces, num_luces,
-        //                d_primitivas_malla, num_primitivas_malla,
-        //                bvh_modelo.getNodosGPU(), bvh_modelo.getPrimitivasGPU(), bvh_modelo.getNumNodos(),
-        //                scene_bounds);
-
         
         cout << "\n================================================" << endl;
         cout << "====              RENDERIZANDO              ====" << endl;
@@ -1183,7 +1734,7 @@ int main() {
         uint32_t n_out = 3;
         uint32_t batch_size_mlp = 65536;
 
-        auto mlp = std::make_unique<ColorMLP>(n_in, n_out, batch_size_mlp, config_ganadora);
+        auto mlp = std::make_unique<ColorMLP>(n_in, n_out, batch_size_mlp, tcnn::json{}, samples_per_pixel);
         mlp->setBounds(scene_bounds.min, scene_bounds.max, scene_bounds.t_min, scene_bounds.t_max);
         cout << "[MLP] Red inicializada." << endl;
         ofstream loss_file("loss_log.txt");
@@ -1402,7 +1953,7 @@ int main() {
                 for(int i=0; i < num_pixels; i++) acumulador_cpu[i] = acumulador_cpu[i] + frame_cpu[i];
                 if (s % 2 == 0) ventana->actualizar(acumulador_cpu, frames_acumulados_reales);
             } else {
-                // Mantener UI viva durante el warmup (solo entrenamiento)
+                // Mantener UI durante el warmup (solo entrenamiento)
                 if (s % 2 == 0) ventana->actualizar(acumulador_cpu, 1);
             }
 
@@ -1435,83 +1986,13 @@ int main() {
 		cudaFree(d_nrc_stats);
 
         cout << "\n==============================================" << endl;
-        cout << "====         GUARDANDO RESULTADOS         ====" << endl;
+        cout << "====      RENDERIZADO FINALIZADO - ESPERANDO ====" << endl;
         cout << "==============================================" << endl;
 
-        // TRANSIENT 
-        if (activar_transient) {
-            const float transient_exposicion_min = 10.0f;
-            const float transient_exposicion_max = 20.0f;
-            for (int i = 0; i < transientRenderer->num_frames; ++i) {
-                // Traer datos de GPU a CPU de forma segura
-                vector<Color> buffer_host = transientRenderer->obtenerFrameHost(i);
+        // Preparar resultado para guardar cuando se pulse el botón
+        RenderResult result{acumulador_cpu, frames_acumulados_reales, ancho_imagen, alto_imagen};
 
-                float alpha = 0.0f;
-                if (transientRenderer->num_frames > 1) {
-                    alpha = (float)i / (float)(transientRenderer->num_frames - 1);
-                }
-                float exposure = transient_exposicion_min + alpha * (transient_exposicion_max - transient_exposicion_min);
-                
-                // Crear una imagen temporal en CPU para guardar
-                Imagen img_temp(ancho_imagen, alto_imagen);
-                // Copiar datos del vector al formato que use tu clase Imagen
-                for(int k=0; k<ancho_imagen*alto_imagen; k++) {
-                    // Normalizar por el número de muestras
-                    Color c = buffer_host[k] / samples_per_pixel;
-                    c = c * exposure;
-                    img_temp.datos[k] = c;
-                }
-                
-                // Quitar extensión del nombre si la tiene
-                string base_nombre = nombre_archivo;
-                size_t pos_ext = base_nombre.rfind('.');
-                if (pos_ext != string::npos) base_nombre = base_nombre.substr(0, pos_ext);
-                string nombre = "../transient/" + base_nombre + "_" + to_string(i) + ".png";
-                Imagen res = img_temp.gamma();
-                guardarPNG(res, nombre.c_str());
-            }
-            cout << "Imágenes transient guardadas en carpeta 'transient/'" << endl;
-        } else {
-            cout << "Render transitorio desactivado, no se guardan frames transient." << endl;
-        }
-
-        // Crear imagen final promediando muestras
-        Imagen imagenCPU(ancho_imagen, alto_imagen);
-        float inv_samples = 1.0f / (float)frames_acumulados_reales;
-        for (int i = 0; i < ancho_imagen * alto_imagen; i++) {
-            imagenCPU.datos[i] = acumulador_cpu[i] * inv_samples;
-        }
-
-        // Aplicar tone mapping
-        Imagen imagen_final = imagenCPU.filmic();
-
-        // Guardar imagen
-        if (guardarPNG(imagen_final, nombre_archivo.c_str())) {
-            cout << "Imagen guardada como: " << nombre_archivo << endl;
-        } else {
-            cout << "Error al guardar la imagen" << endl;
-            return 1;
-        }
-
-        if (activar_transient) {
-            std::ofstream outFile("transient_volume.bin", std::ios::binary);
-            for (int i = 0; i < transientRenderer->num_frames; ++i) {
-                vector<Color> buffer_host = transientRenderer->obtenerFrameHost(i);
-                for(int k=0; k < ancho_imagen * alto_imagen; k++) {
-                    // Guardar la intensidad
-                    float luminancia = (buffer_host[k].r + buffer_host[k].g + buffer_host[k].b) / 3.0f;
-                    outFile.write(reinterpret_cast<const char*>(&luminancia), sizeof(float));
-                }
-            }
-            outFile.close();
-            cout << "Volumen binario guardado para Python." << endl;
-        }
-
-        cout << "\n=================================================" << endl;
-        cout << "====      RENDERIZADO FINALIZADO - ESPERANDO ====" << endl;
-        cout << "=================================================" << endl;
-
-        // Mantener el render visible y decidir guardado desde la propia UI
+        // Mantener el render visible
         RenderGuiState& post_state = ventana->uiState();
         post_state = runtime_state;
         post_state.accumulatedSamples = frames_acumulados_reales;
@@ -1526,16 +2007,70 @@ int main() {
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
         }
 
-        // Guardar imagen si el usuario lo solicitó
-        if (post_state.requestSave) {
-            nombre_archivo = runtime_state.outputFileName;
-            if (guardarPNG(imagen_final, nombre_archivo.c_str())) {
-                cout << "Imagen guardada como: " << nombre_archivo << endl;
+        // Ejecutar reconstrucción si el usuario lo solicitó
+        if (post_state.requestReconstruction) {
+            cout << "\n=================================================" << endl;
+            cout << "====      INICIANDO RECONSTRUCCIÓN            ====" << endl;
+            cout << "=================================================" << endl;
+
+            // Limpiar transitorio anterior
+            if (activar_transient) {
+                cout << "[Transient] Limpiando render transitorio anterior..." << endl;
+                transientRenderer->limpiarAcumulado();
+            }
+
+            // Ejecutar reconstrucción usando el modelo entrenado en memoria
+            RenderResult result_reconstruct = renderizarModoReconstruccion(
+                ancho_imagen, alto_imagen, nombre_archivo, "",
+                samples_per_pixel,
+                d_camara, d_primitivas, num_primitivas, d_luces, num_luces,
+                bvh_modelo_tiny, d_primitivas_malla, num_primitivas_malla,
+                scene_bounds, transientRenderer, t_final, activar_transient,
+                ventana.get(), runtime_state,
+                mlp.get()  // Pasar el modelo entrenado en memoria
+            );
+
+            if (result_reconstruct.num_samples > 0) {
+                cout << "\n=================================================" << endl;
+                cout << "====      RECONSTRUCCIÓN FINALIZADA - ESPERANDO ====" << endl;
+                cout << "=================================================" << endl;
+
+                post_state.accumulatedSamples = result_reconstruct.num_samples;
+                post_state.warmupActive = false;
+                post_state.pauseRendering = true;
+                post_state.renderingComplete = true;
+                post_state.requestSave = false;
+                post_state.requestReconstruction = false;
+
+                while (post_state.renderingComplete && ventana->procesarEventos()) {
+                    ventana->actualizar(result_reconstruct.acumulador_cpu, result_reconstruct.num_samples);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+                }
+
+                // Guardar imagen si el usuario lo solicitó
+                if (post_state.requestSave) {
+                    guardarResultadosRenderizado(result_reconstruct, nombre_archivo, transientRenderer, activar_transient, runtime_state, "filmic", true,
+                                                post_state.saveFramesPng, post_state.saveFramesBin, post_state.saveFramesBinAllFrames, post_state.saveTransientVolume);
+                    cout << "Imagen guardada." << endl;
+                } else {
+                    cout << "Imagen no guardada." << endl;
+                }
+
+                post_state.requestReconstruction = false;
             } else {
-                cout << "Error al guardar la imagen" << endl;
+                cout << "Error en la reconstrucción." << endl;
+                post_state.requestReconstruction = false;
+                post_state.renderingComplete = false;
             }
         } else {
-            cout << "Imagen no guardada." << endl;
+            // Guardar imagen del renderizado original si no se pidió reconstrucción
+            if (post_state.requestSave) {
+                guardarResultadosRenderizado(result, nombre_archivo, transientRenderer, activar_transient, runtime_state, "filmic", true,
+                                            post_state.saveFramesPng, post_state.saveFramesBin, post_state.saveFramesBinAllFrames, post_state.saveTransientVolume);
+                cout << "Imagen guardada." << endl;
+            } else {
+                cout << "Imagen no guardada." << endl;
+            }
         }
 
         // Limpiar recursos GPU

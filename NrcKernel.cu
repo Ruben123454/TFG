@@ -4,7 +4,7 @@
 
 __device__ float normalize_coord(float val, float min, float max) {
     float normalized = (val - min) / (max - min);
-    return fminf(fmaxf(normalized, 0.0f), 1.0f);
+    return fminf(fmaxf(normalized, 0.0f), 0.9999f);
 }
 
 __global__ void generarIndicesAleatorios(int* indices, int max_range, int count, unsigned int seed) {
@@ -22,7 +22,8 @@ __global__ void prepararDatosEntrenamiento(const DatosMLP* __restrict__ buffer,
                                            int n_out,
                                            SceneBounds bounds,
                                            float* __restrict__ input_matrix,
-                                           float* __restrict__ target_matrix) {
+                                           float* __restrict__ target_matrix,
+                                           bool apply_log_mapping) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= batch_size) return;
 
@@ -35,7 +36,7 @@ __global__ void prepararDatosEntrenamiento(const DatosMLP* __restrict__ buffer,
     input_matrix[base_in + 1] = normalize_coord(d.posicion.y, bounds.min.y, bounds.max.y);
     input_matrix[base_in + 2] = normalize_coord(d.posicion.z, bounds.min.z, bounds.max.z);
 
-    input_matrix[base_in + 3] = normalize_coord(d.tiempo, bounds.t_min, bounds.t_max);
+    input_matrix[base_in + 3] = normalize_coord(d.tiempo, 0.0f, bounds.t_max);
 
     input_matrix[base_in + 4] = d.direccion.x;
     input_matrix[base_in + 5] = d.direccion.y;
@@ -64,9 +65,15 @@ __global__ void prepararDatosEntrenamiento(const DatosMLP* __restrict__ buffer,
     if (g > max_val) g = max_val;
     if (b > max_val) b = max_val;
 
-    target_matrix[base_out + 0] = r;
-    target_matrix[base_out + 1] = g;
-    target_matrix[base_out + 2] = b;
+    if (apply_log_mapping) {
+        target_matrix[base_out + 0] = logf(r + 1.0f);
+        target_matrix[base_out + 1] = logf(g + 1.0f);
+        target_matrix[base_out + 2] = logf(b + 1.0f);
+    } else {
+        target_matrix[base_out + 0] = r;
+        target_matrix[base_out + 1] = g;
+        target_matrix[base_out + 2] = b;
+    }
 }
 
 __global__ void prepararDatosInferencia(const DatosMLP* datos, uint32_t n_elements, uint32_t n_in, float* buffer_in, SceneBounds bounds) {
@@ -80,8 +87,8 @@ __global__ void prepararDatosInferencia(const DatosMLP* datos, uint32_t n_elemen
     buffer_in[base + 0] = normalize_coord(d.posicion.x, bounds.min.x, bounds.max.x);
     buffer_in[base + 1] = normalize_coord(d.posicion.y, bounds.min.y, bounds.max.y);
     buffer_in[base + 2] = normalize_coord(d.posicion.z, bounds.min.z, bounds.max.z);
-
-    buffer_in[base + 3] = normalize_coord(d.tiempo, bounds.t_min, bounds.t_max);
+    
+    buffer_in[base + 3] = normalize_coord(d.tiempo, 0.0f, bounds.t_max);
 
     buffer_in[base + 4] = d.direccion.x;
     buffer_in[base + 5] = d.direccion.y;
@@ -100,7 +107,7 @@ __global__ void prepararDatosInferencia(const DatosMLP* datos, uint32_t n_elemen
     buffer_in[base + 15] = d.especular.b;
 }
 
-__global__ void guardarSalidaInferencia(float* network_output, Color* buffer_color, int n_elements) {
+__global__ void guardarSalidaInferencia(float* network_output, Color* buffer_color, int n_elements, bool apply_log_mapping) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n_elements) return;
 
@@ -126,9 +133,11 @@ __global__ void guardarSalidaInferencia(float* network_output, Color* buffer_col
     if (isinf(g)) g = max_val;
     if (isinf(b)) b = max_val;
 
-    r = expf(r) - 1.0f;
-    g = expf(g) - 1.0f;
-    b = expf(b) - 1.0f;
+    if (apply_log_mapping) {
+        r = expf(r) - 1.0f;
+        g = expf(g) - 1.0f;
+        b = expf(b) - 1.0f;
+    }
     
     if (r < 0.0f) r = 0.0f;
     if (g < 0.0f) g = 0.0f;
@@ -151,9 +160,10 @@ void launchPrepararDatosEntrenamiento(int num_blocks, int num_threads, cudaStrea
                                       int n_out,
                                       SceneBounds bounds,
                                       float* input_matrix,
-                                      float* target_matrix) {
+                                      float* target_matrix,
+                                      bool apply_log_mapping) {
     prepararDatosEntrenamiento<<<num_blocks, num_threads, 0, stream>>>(
-        buffer, indices_aleatorios, batch_size, n_in, n_out, bounds, input_matrix, target_matrix
+        buffer, indices_aleatorios, batch_size, n_in, n_out, bounds, input_matrix, target_matrix, apply_log_mapping
     );
 }
 
@@ -163,6 +173,6 @@ void launchPrepararDatosInferencia(int num_blocks, int num_threads, cudaStream_t
 }
 
 void launchGuardarSalidaInferencia(int num_blocks, int num_threads, cudaStream_t stream,
-                                   float* network_output, Color* buffer_color, int n_elements) {
-    guardarSalidaInferencia<<<num_blocks, num_threads, 0, stream>>>(network_output, buffer_color, n_elements);
+                                   float* network_output, Color* buffer_color, int n_elements, bool apply_log_mapping) {
+    guardarSalidaInferencia<<<num_blocks, num_threads, 0, stream>>>(network_output, buffer_color, n_elements, apply_log_mapping);
 }

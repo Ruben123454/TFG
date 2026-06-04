@@ -14,11 +14,12 @@ __global__ void prepararDatosEntrenamiento(const DatosMLP* __restrict__ buffer,
                                            int n_out,
                                            SceneBounds bounds,
                                            float* __restrict__ input_matrix,
-                                           float* __restrict__ target_matrix);
+                                           float* __restrict__ target_matrix,
+                                           bool apply_log_mapping);
 
 __global__ void prepararDatosInferencia(const DatosMLP* datos, uint32_t n_elements, uint32_t n_in, float* buffer_in, SceneBounds bounds);
 
-__global__ void guardarSalidaInferencia(float* network_output, Color* buffer_color, int n_elements);
+__global__ void guardarSalidaInferencia(float* network_output, Color* buffer_color, int n_elements, bool apply_log_mapping);
 
 // Wrappers host para invocar desde .cpp
 void launchGenerarIndicesAleatorios(int num_blocks, int num_threads, cudaStream_t stream,
@@ -32,10 +33,11 @@ void launchPrepararDatosEntrenamiento(int num_blocks, int num_threads, cudaStrea
                                       int n_out,
                                       SceneBounds bounds,
                                       float* input_matrix,
-                                      float* target_matrix);
+                                      float* target_matrix,
+                                      bool apply_log_mapping);
 
 void launchPrepararDatosInferencia(int num_blocks, int num_threads, cudaStream_t stream,
                                    const DatosMLP* datos, uint32_t n_elements, uint32_t n_in, float* buffer_in, SceneBounds bounds);
 
 void launchGuardarSalidaInferencia(int num_blocks, int num_threads, cudaStream_t stream,
-                                   float* network_output, Color* buffer_color, int n_elements);
+                                   float* network_output, Color* buffer_color, int n_elements, bool apply_log_mapping);

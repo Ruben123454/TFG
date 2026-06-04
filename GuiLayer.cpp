@@ -6,9 +6,6 @@
 
 #include <KHR/glad.h>
 #include <GLFW/glfw3.h>
-#include <cstring>
-#include <cstdio>
-#include <cfloat>
 
 bool GuiLayer::init(GLFWwindow* window, const char* glslVersion) {
 	if (initialized_ || window == nullptr) {
@@ -75,11 +72,40 @@ void GuiLayer::drawConfigScreen(RenderGuiState& state) {
 	ImGui::Begin("Configuracion Inicial", nullptr);
 
 	ImGui::Text("=== MODO DE RENDERIZADO ===");
-	ImGui::RadioButton("Modo Normal (Entrenamiento + Inferencia)", &state.renderMode, 0);
-	ImGui::RadioButton("Modo Reconstruccion (Solo Inferencia)", &state.renderMode, 1);
+	ImGui::RadioButton("Modo 0: Pathtracer + Entrenamiento + Inferencia", &state.renderMode, 0);
+	ImGui::RadioButton("Modo 1: Reconstruccion (Solo Inferencia)", &state.renderMode, 1);
+	ImGui::RadioButton("Modo 2: Pathtracer Puro (sin entrenamiento ni inferencia)", &state.renderMode, 2);
+	ImGui::RadioButton("Modo 3: Pathtracer + Inferencia + Reconstruccion (Combinado)", &state.renderMode, 3);
+	ImGui::RadioButton("Modo 4: Grid Search (Busqueda de hiperparametros)", &state.renderMode, 4);
+	ImGui::RadioButton("Modo 5: Calcular metricas entre imagenes", &state.renderMode, 5);
 
-	if (state.renderMode == 1) {
+	if (state.renderMode == 1 || state.renderMode == 3) {
 		ImGui::InputText("Ruta modelo MLP", state.mlpModelPath, IM_ARRAYSIZE(state.mlpModelPath));
+	}
+
+	if (state.renderMode == 4) {
+		ImGui::InputText("Ruta Ground Truth", state.groundTruthFolder, IM_ARRAYSIZE(state.groundTruthFolder));
+		ImGui::TextWrapped("Carpeta con frames .raw/.bin para calcular MSE en Grid Search.");
+	}
+
+	if (state.renderMode == 5) {
+		ImGui::InputText("Ruta Ground Truth##metricas_gt", state.metricsGroundTruthPath, IM_ARRAYSIZE(state.metricsGroundTruthPath));
+		ImGui::InputText("Ruta imagen a comparar##metricas_img", state.metricsImagePath, IM_ARRAYSIZE(state.metricsImagePath));
+		ImGui::TextWrapped("Formatos soportados: .png, .bin, .raw (para .bin/.raw se usa ancho/alto indicados). ");
+
+		ImGui::Separator();
+		ImGui::TextUnformatted("Metricas a calcular:");
+		ImGui::Checkbox("MSE", &state.metricMSE);
+		ImGui::SameLine();
+		ImGui::Checkbox("MRSE", &state.metricMRSE);
+		ImGui::SameLine();
+		ImGui::Checkbox("PSNR", &state.metricPSNR);
+		ImGui::SameLine();
+		ImGui::Checkbox("SSIM", &state.metricSSIM);
+
+		if (!state.metricMSE && !state.metricMRSE && !state.metricPSNR && !state.metricSSIM) {
+			ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f), "Selecciona al menos una metrica.");
+		}
 	}
 
 	ImGui::Separator();
@@ -102,6 +128,7 @@ void GuiLayer::drawConfigScreen(RenderGuiState& state) {
 		ImGui::InputInt("Frames Transient", &state.transientFrames, 1, 10);
 		if (state.transientFrames < 1) state.transientFrames = 1;
 		if (state.transientFrames > 10000) state.transientFrames = 10000;
+		ImGui::InputText("Ruta transient", state.transientOutputPath, IM_ARRAYSIZE(state.transientOutputPath));
 	}
 
 	ImGui::Separator();
@@ -115,18 +142,29 @@ void GuiLayer::drawConfigScreen(RenderGuiState& state) {
 	ImGui::Separator();
 	ImGui::Text("=== SALIDA ===");
 	ImGui::InputText("Nombre archivo salida", state.outputFileName, IM_ARRAYSIZE(state.outputFileName));
-	if(!state.renderMode == 1) {
+	if(state.renderMode == 0) {
 		ImGui::Checkbox("Guardar modelo MLP entrenado", &state.saveMlpModel);
 		if (state.saveMlpModel) {
 			ImGui::InputText("Ruta modelo MLP", state.mlpModelPath, IM_ARRAYSIZE(state.mlpModelPath));
 		}
 	}
+	
 	ImGui::Separator();
 	ImGui::SetCursorPosX((ImGui::GetWindowWidth() - 120) * 0.5f);
-	if (ImGui::Button("INICIAR RENDERIZADO", ImVec2(160, 40))) {
+	const char* startLabel = "INICIAR RENDERIZADO";
+	if (state.renderMode == 4) {
+		startLabel = "INICIAR GRID SEARCH";
+	} else if (state.renderMode == 5) {
+		startLabel = "CALCULAR METRICAS";
+	}
+	if (ImGui::Button(startLabel, ImVec2(160, 40))) {
+		state.runGridSearch = (state.renderMode == 4);
+		state.metricsComputed = false;
+		state.metricsCalculationFailed = false;
+		state.metricsErrorMessage[0] = '\0';
 		state.readyToRender = true;
 	}
-
+	
 	ImGui::End();
 }
 
@@ -176,7 +214,7 @@ void GuiLayer::drawControls(RenderGuiState& state) {
 	if (state.samplesPerPixel < 1) state.samplesPerPixel = 1;
 	if (state.samplesPerPixel > 10000000) state.samplesPerPixel = 10000000;
 
-	if(!state.renderMode == 1) {
+	if(state.renderMode == 0) {
 		ImGui::Separator();
 		ImGui::Checkbox("Guardar modelo MLP entrenado", &state.saveMlpModel);
 		if (state.saveMlpModel) {
@@ -187,15 +225,34 @@ void GuiLayer::drawControls(RenderGuiState& state) {
 	if (state.renderingComplete) {
 		ImGui::Separator();
 		ImGui::TextUnformatted("Renderizado completado");
-		if(!state.renderMode == 1) {
+		if(state.renderMode == 0) {
 			if (state.saveMlpModel) {
 				ImGui::Text("Modelo MLP guardado en: %s", state.mlpModelPath);
 			} else {
 				ImGui::TextUnformatted("Modelo MLP no guardado");
 			}
+			ImGui::Separator();
+			if (ImGui::Button("Reconstruccion", ImVec2(150, 30))) {
+				state.requestReconstruction = true;
+				state.renderingComplete = false;
+			}
+			ImGui::Separator();
 		}
 		ImGui::Text("Archivo: %s", state.outputFileName);
 		ImGui::InputText("Nombre archivo salida", state.outputFileName, IM_ARRAYSIZE(state.outputFileName));
+		ImGui::Separator();
+		ImGui::TextUnformatted("Opciones de guardado");
+		if (!state.activarTransient) {
+			ImGui::BeginDisabled();
+		}
+		ImGui::Checkbox("Frames png", &state.saveFramesPng);
+		ImGui::Checkbox("Frames bin (uno por frame)", &state.saveFramesBin);
+		ImGui::Checkbox("Frames bin (global)", &state.saveFramesBinAllFrames);
+		ImGui::Checkbox("Transient volume", &state.saveTransientVolume);
+		if (!state.activarTransient) {
+			ImGui::EndDisabled();
+			ImGui::TextUnformatted("(Transient desactivado)\n");
+		}
 		if (ImGui::Button("Guardar imagen")) {
 			state.requestSave = true;
 			state.renderingComplete = false;
@@ -262,37 +319,6 @@ void GuiLayer::drawControls(RenderGuiState& state) {
 	ImGui::End();
 }
 
-void GuiLayer::drawSaveScreen(RenderGuiState& state) {
-	if (!initialized_) {
-		return;
-	}
-
-	ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f - 150, ImGui::GetIO().DisplaySize.y * 0.5f - 50), ImGuiCond_Appearing);
-	ImGui::SetNextWindowSize(ImVec2(300, 100), ImGuiCond_Appearing);
-	
-	ImGui::Begin("Renderizado Completado", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize);
-
-	ImGui::Text("El renderizado ha finalizado!");
-
-	ImGui::Text("Archivo: %s", state.outputFileName);
-
-	ImGui::Separator();
-
-	float button_width = (ImGui::GetWindowWidth() - 20) / 2;
-	
-	if (ImGui::Button("Guardar imagen", ImVec2(button_width, 30))) {
-		state.requestSave = true;
-		state.renderingComplete = false;
-	}
-
-	ImGui::SameLine();
-
-	if (ImGui::Button("Descartar", ImVec2(button_width, 30))) {
-		state.renderingComplete = false;
-	}
-
-	ImGui::End();
-}
 
 void GuiLayer::endFrame(int framebufferWidth, int framebufferHeight) {
 	if (!initialized_) {

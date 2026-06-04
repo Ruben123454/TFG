@@ -8,10 +8,8 @@
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
-#include <cuda_runtime.h>
 #include <iostream>
 #include <vector>
-#include <algorithm>
 #include <cmath>
 
 #include "escenario.h"

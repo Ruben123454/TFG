@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cstdint>
 #include "CudaInterop.h"
 
 struct ImGuiContext;
@@ -17,7 +16,6 @@ public:
     void beginFrame();
     void drawConfigScreen(RenderGuiState& state);
     void drawControls(RenderGuiState& state);
-    void drawSaveScreen(RenderGuiState& state);
     void endFrame(int framebufferWidth, int framebufferHeight);
 
 private:

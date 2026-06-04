@@ -86,6 +86,7 @@ add_executable(raytracer
     main.cpp
     bvh.cpp
     mlp.cpp
+    metricas_utils.cu
     RenderKernel.cu
     NrcKernel.cu
     tinybvh_wrapper.cpp
