@@ -192,7 +192,6 @@ void inicializarEscena(Primitiva** d_primitivas, int* num_primitivas, LuzPuntual
     luz_techo.intensidad = Color(100, 100, 100);
     host_luces.push_back(luz_techo);
     
-    /*
     // Pared izquierda (cian)
     Primitiva pared_izq = {};
     pared_izq.tipo = PLANO;
@@ -253,6 +252,7 @@ void inicializarEscena(Primitiva** d_primitivas, int* num_primitivas, LuzPuntual
     pared_fondo.indice_refraccion = 1.0f;
     host_primitivas.push_back(pared_fondo);
 
+    /*
     // Esfera cristal Grande (Izquierda - Muy Cerca)
     Primitiva s1 = {};
     s1.tipo = ESFERA;

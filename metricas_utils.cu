@@ -11,47 +11,6 @@ __global__ void calcularMSEKernel(const uint8_t* img, const uint8_t* gt, float* 
     }
 }
 
-float calcularMRSE(const Color* d_img, const Color* d_gt, int num_pixels) {
-    float *d_mrse = nullptr;
-    cudaMalloc(&d_mrse, num_pixels * sizeof(float));
-
-    int threads = 256;
-    int blocks = (num_pixels + threads - 1) / threads;
-    calcularMRSEKernel<<<blocks, threads>>>(d_img, d_gt, d_mrse, num_pixels);
-
-    vector<float> h_mrse(num_pixels);
-    cudaMemcpy(h_mrse.data(), d_mrse, num_pixels * sizeof(float), cudaMemcpyDeviceToHost);
-
-    double total_mrse = 0.0;
-    for (int i = 0; i < num_pixels; ++i) {
-        total_mrse += h_mrse[i];
-    }
-
-    float mean_mrse = static_cast<float>(total_mrse / std::max(1, num_pixels));
-    
-    cudaFree(d_mrse);
-    return mean_mrse;
-}
-
-__global__ void calcularMRSEKernel(const Color* img, const Color* gt, float* mrse_out, int n_pixels) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < n_pixels) {
-        float dr = img[idx].r - gt[idx].r;
-        float dg = img[idx].g - gt[idx].g;
-        float db = img[idx].b - gt[idx].b;
-        
-        // Constante epsilon para evitar división por cero en píxeles negros absolutos
-        const float epsilon = 1e-5f;
-        
-        // Error relativo calculado por canal individualmente
-        float mrse_r = (dr * dr) / (gt[idx].r * gt[idx].r + epsilon);
-        float mrse_g = (dg * dg) / (gt[idx].g * gt[idx].g + epsilon);
-        float mrse_b = (db * db) / (gt[idx].b * gt[idx].b + epsilon);
-        
-        mrse_out[idx] = (mrse_r + mrse_g + mrse_b) / 3.0f;
-    }
-}
-
 float calcularMSE(const uint8_t* d_ref, const uint8_t* d_pred, int num_pixels) {
     float *d_mse = nullptr;
     cudaMalloc(&d_mse, num_pixels * sizeof(float));
@@ -75,6 +34,47 @@ float calcularMSE(const uint8_t* d_ref, const uint8_t* d_pred, int num_pixels) {
     return mean_mse;
 }
 
+
+__global__ void calcularMRSEKernel(const Color* img, const Color* gt, float* mrse_out, int n_pixels) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n_pixels) {
+        float dr = img[idx].r - gt[idx].r;
+        float dg = img[idx].g - gt[idx].g;
+        float db = img[idx].b - gt[idx].b;
+        
+        // Constante epsilon para evitar división por cero en píxeles negros absolutos
+        const float epsilon = 1e-5f;
+        
+        // Error relativo calculado por canal individualmente
+        float mrse_r = (dr * dr) / (gt[idx].r * gt[idx].r + epsilon);
+        float mrse_g = (dg * dg) / (gt[idx].g * gt[idx].g + epsilon);
+        float mrse_b = (db * db) / (gt[idx].b * gt[idx].b + epsilon);
+        
+        mrse_out[idx] = (mrse_r + mrse_g + mrse_b) / 3.0f;
+    }
+}
+
+float calcularMRSE(const Color* d_img, const Color* d_gt, int num_pixels) {
+    float *d_mrse = nullptr;
+    cudaMalloc(&d_mrse, num_pixels * sizeof(float));
+
+    int threads = 256;
+    int blocks = (num_pixels + threads - 1) / threads;
+    calcularMRSEKernel<<<blocks, threads>>>(d_img, d_gt, d_mrse, num_pixels);
+
+    vector<float> h_mrse(num_pixels);
+    cudaMemcpy(h_mrse.data(), d_mrse, num_pixels * sizeof(float), cudaMemcpyDeviceToHost);
+
+    double total_mrse = 0.0;
+    for (int i = 0; i < num_pixels; ++i) {
+        total_mrse += h_mrse[i];
+    }
+
+    float mean_mrse = static_cast<float>(total_mrse / std::max(1, num_pixels));
+    
+    cudaFree(d_mrse);
+    return mean_mrse;
+}
 
 __global__ void calcularPSNRKernel(const uint8_t* ref, const uint8_t* pred, float* mse_out, int n_pixels) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
