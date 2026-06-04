@@ -104,7 +104,7 @@ public:
                     }
                 }
 
-                footprint_suficiente = (a_current >= a_0 * 0.01f);
+                footprint_suficiente = (a_current >= a_0 * 2.0f);
 
                 Color Le = primitiva_intersectada->emision;
                 if (Le.max() > 0.0f) {
@@ -112,9 +112,19 @@ public:
                     color = color + contrib;
 
                     if (punto_entrenamiento_encontrado) {
+                        float dx = fminf(fmaxf(-rayo_actual.direccion().normalized().x * 0.5f + 0.5f, 0.001f), 0.999f);
+                        float dy = fminf(fmaxf(-rayo_actual.direccion().normalized().y * 0.5f + 0.5f, 0.001f), 0.999f);
+                        float dz = fminf(fmaxf(-rayo_actual.direccion().normalized().z * 0.5f + 0.5f, 0.001f), 0.999f);
+                        Vector3d dir_mapped = Vector3d(dx, dy, dz);
+
+                        float nx = fminf(fmaxf(normal.x * 0.5f + 0.5f, 0.001f), 0.999f);
+                        float ny = fminf(fmaxf(normal.y * 0.5f + 0.5f, 0.001f), 0.999f);
+                        float nz = fminf(fmaxf(normal.z * 0.5f + 0.5f, 0.001f), 0.999f);
+                        Vector3d norm_mapped = Vector3d(nx, ny, nz);
+
                         registro_train.tail.posicion = punto_interseccion;
-                        registro_train.tail.direccion = -rayo_actual.direccion().normalized();
-                        registro_train.tail.normal = normal;
+                        registro_train.tail.direccion = dir_mapped;
+                        registro_train.tail.normal = norm_mapped;
                         registro_train.tail.difuso = Color(0,0,0);
                         registro_train.tail.especular = Color(0,0,0);
 
@@ -127,6 +137,13 @@ public:
 
                         // La luz total recolectada por el sufijo
                         registro_train.luz_acumulada_sufijo = color - color_acumulado_pre_train;
+
+                        //if (profundidad >= 2) {
+                        //    registro_train.luz_acumulada_sufijo = color - color_acumulado_pre_train;
+                        //} else {
+                        //    registro_train.luz_acumulada_sufijo = Color(0,0,0);
+                        //}
+                        
                         registro_train.throughput_sufijo = Color(0,0,0);
                         registro_train.factor_normalizacion = throughput_at_train_vertex;
                         registro_train.valido = true;
@@ -137,18 +154,31 @@ public:
                     if (!modo_reconstruccion && !(es_ruta_entrenamiento && punto_entrenamiento_encontrado)) {
                         transientRenderer.agregarMuestra(px, py, tiempo_acumulado, contrib);
                     }
+
+                    //if (profundidad >= 2) {
+                    //    color = color + contrib;
+                    //    // Solo depositar en transient si no estamos en el sufijo de una ruta de entrenamiento
+                    //    if (!modo_reconstruccion && !(es_ruta_entrenamiento && punto_entrenamiento_encontrado)) {
+                    //        transientRenderer.agregarMuestra(px, py, tiempo_acumulado, contrib);
+                    //    }
+                    //}
                     break;
                 }
 
                 // NEE (Luz Directa)
                 if(es_difuso && !modo_reconstruccion) {
                     Vector3d punto_sombra = punto_interseccion + normal * EPSILON;
-                    bool depositar_transient_nee = !(es_ruta_entrenamiento && punto_entrenamiento_encontrado);
+                    bool depositar_transient_nee = !(es_ruta_entrenamiento && punto_entrenamiento_encontrado);// && profundidad >= 1;
                     Color L_dir = escena.calcularLuzDirecta(punto_interseccion, normal, primitiva_intersectada, 
                                                                 transientRenderer, px, py, tiempo_acumulado, 
                                                                 tiempo_acumulado_NEE, camino, current_ior, depositar_transient_nee);
                     Color contrib_nee = camino * L_dir;
                     color = color + contrib_nee;
+
+                    //if (profundidad >= 1) {
+                    //    Color contrib_nee = camino * L_dir;
+                    //    color = color + contrib_nee;
+                    //}
                 }
                 
 
@@ -161,15 +191,16 @@ public:
                     if (terminar_sufijo) { // Bootstrapping del sufijo de entrenamiento
 
                         // Pasar de [-1, 1] a [0, 1]
-                        direccion_vista = direccion_vista.normalized();
-                        normal = normal.normalized();
-                        Vector3d dir_mapped = Vector3d(direccion_vista.x * 0.5f + 0.5f, 
-                                                    direccion_vista.y * 0.5f + 0.5f, 
-                                                    direccion_vista.z * 0.5f + 0.5f);
-                        Vector3d norm_mapped = Vector3d(normal.x * 0.5f + 0.5f, 
-                                                        normal.y * 0.5f + 0.5f, 
-                                                        normal.z * 0.5f + 0.5f);
+                        float dx = fminf(fmaxf(direccion_vista.x * 0.5f + 0.5f, 0.001f), 0.999f);
+                        float dy = fminf(fmaxf(direccion_vista.y * 0.5f + 0.5f, 0.001f), 0.999f);
+                        float dz = fminf(fmaxf(direccion_vista.z * 0.5f + 0.5f, 0.001f), 0.999f);
+                        Vector3d dir_mapped = Vector3d(dx, dy, dz);
 
+                        float nx = fminf(fmaxf(normal.x * 0.5f + 0.5f, 0.001f), 0.999f);
+                        float ny = fminf(fmaxf(normal.y * 0.5f + 0.5f, 0.001f), 0.999f);
+                        float nz = fminf(fmaxf(normal.z * 0.5f + 0.5f, 0.001f), 0.999f);
+                        Vector3d norm_mapped = Vector3d(nx, ny, nz);
+                        
                         // Tiempo desde la luz hasta el tail
                         double tiempo_luz_tail = fmax(0.0, tiempo_acumulado_NEE - tiempo_acumulado);
                         registro_train.tail.tiempo = (float)tiempo_luz_tail;
@@ -194,7 +225,7 @@ public:
                 }
 
                 // Decidir si el rebote actual es parte del sufijo de entrenamiento o no, y capturar datos para la inferencia
-                if((es_difuso && !es_especular && footprint_suficiente) || modo_reconstruccion) {
+                if((es_difuso && !es_especular && footprint_suficiente /*profundidad >= 1*/) || modo_reconstruccion) {
                     Color reflectancia = primitiva_intersectada->difuso + primitiva_intersectada->especular + primitiva_intersectada->transmision;
                     float min_refl = 1e-3f; 
                     reflectancia.r = fmaxf(reflectancia.r, min_refl);
@@ -202,13 +233,15 @@ public:
                     reflectancia.b = fmaxf(reflectancia.b, min_refl);
 
                     // Pasar de [-1, 1] a [0, 1]
-                    Vector3d dir_mapped = Vector3d(direccion_vista.x * 0.5f + 0.5f, 
-                                                direccion_vista.y * 0.5f + 0.5f, 
-                                                direccion_vista.z * 0.5f + 0.5f);
-                    
-                    Vector3d norm_mapped = Vector3d(normal.x * 0.5f + 0.5f, 
-                                                    normal.y * 0.5f + 0.5f, 
-                                                    normal.z * 0.5f + 0.5f);
+                    float dx = fminf(fmaxf(direccion_vista.x * 0.5f + 0.5f, 0.001f), 0.999f);
+                    float dy = fminf(fmaxf(direccion_vista.y * 0.5f + 0.5f, 0.001f), 0.999f);
+                    float dz = fminf(fmaxf(direccion_vista.z * 0.5f + 0.5f, 0.001f), 0.999f);
+                    Vector3d dir_mapped = Vector3d(dx, dy, dz);
+
+                    float nx = fminf(fmaxf(normal.x * 0.5f + 0.5f, 0.001f), 0.999f);
+                    float ny = fminf(fmaxf(normal.y * 0.5f + 0.5f, 0.001f), 0.999f);
+                    float nz = fminf(fmaxf(normal.z * 0.5f + 0.5f, 0.001f), 0.999f);
+                    Vector3d norm_mapped = Vector3d(nx, ny, nz);
                                                     
                     if (!es_ruta_entrenamiento && usar_red_inferencia) { // Capturar datos para inferencia
                         // Muestrear T_target con jittering temporal estratificado
@@ -283,7 +316,7 @@ public:
                                 punto_interseccion, normal, primitiva_intersectada, current_ior, pdf_ultimo_rebote, ultimo_fue_especular);
 
                 // Ruleta rusa
-                if(profundidad > 10) {
+                if(profundidad > 4) {
                     double prob = fmax(camino.r, fmax(camino.g, camino.b));
                     if (prob > 0.95) prob = 0.95;
                     if (pcg32_float(rng_seed) > prob) {
@@ -384,13 +417,12 @@ public:
             // Actualizar camino
             camino = camino * k_d / p_difuso;
 
-            // Muestrear dirección en el hemisferio usando distribución cosenoidal
-            Vector3d wi_local = muestrearCosenoUniforme(rng_seed);
-
             // Asegurar que la dirección muestreada está en el hemisferio correcto
-            while(wi_local.z <= EPSILON) {
-                return;
-            }
+            Vector3d wi_local;
+            do {
+                // Muestrear dirección en el hemisferio usando distribución cosenoidal
+                wi_local = muestrearCosenoUniforme(rng_seed);
+            } while(wi_local.z <= EPSILON);
 
             Vector3d wi = transformarALMundo(wi_local, normal);
 
@@ -543,8 +575,7 @@ public:
         Color throughput_inferencia(0,0,0);
         bool necesita_inferencia = false;
         // Fase 1 (Warmup): entrenar_red=true, usar_red_inferencia=false → 100% entrenamiento
-        // Fase 2 (Post-warmup a frame 80): entrenar_red=true, usar_red_inferencia=true → 3% entrena, 97% infiere
-        // Fase 3 (Frame 80+): entrenar_red=false, usar_red_inferencia=true → 0% entrena, 100% infiere
+        // Fase 2 (Post-warmup): entrenar_red=true, usar_red_inferencia=true → 3% entrena, 97% infiereç
         bool es_training_pixel = !modo_reconstruccion ? (entrenar_red ? (usar_red_inferencia ? (pcg32_float(rng_seed) < 0.05f) : true) : false) : false;
 
         Color color = lanzarRayoIterativo(rayo, escena, rng_seed, x, y, frame_number, transientRenderer,
@@ -552,19 +583,29 @@ public:
                                             datos_inferencia, throughput_inferencia, necesita_inferencia, es_training_pixel, usar_red_inferencia, 
                                             modo_reconstruccion);
 
-        imagen.setPixel(x, y, color);
+        if (modo_reconstruccion) {
+            imagen.setPixel(x, y, Color(0,0,0));
+        } else {
+            imagen.setPixel(x, y, color);
+        }
         
         // Guardar Datos Inferencia
         if (necesita_inferencia) {
-            buffer_inference[y * ancho_img + x] = datos_inferencia;
-            buffer_throughput[y * ancho_img + x] = throughput_inferencia;
+            if (buffer_inference != nullptr) {
+                buffer_inference[y * ancho_img + x] = datos_inferencia;
+            }
+            if (buffer_throughput != nullptr) {
+                buffer_throughput[y * ancho_img + x] = throughput_inferencia;
+            }
         }
         else {
-            buffer_throughput[y * ancho_img + x] = Color(0,0,0);
+            if (buffer_throughput != nullptr) {
+                buffer_throughput[y * ancho_img + x] = Color(0,0,0);
+            }
         }
 
         // Guardar Datos Entrenamiento solo si es pixel de entrenamiento y se ha marcado para guardar
-        if (es_training_pixel && guardar_train && counter_training != nullptr) {
+        if (es_training_pixel && guardar_train && counter_training != nullptr && buffer_training != nullptr) {
             unsigned int idx = atomicAdd(counter_training, 1);
             buffer_training[idx % max_cap_training] = reg_train;
         }

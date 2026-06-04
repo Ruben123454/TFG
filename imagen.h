@@ -198,7 +198,7 @@ public:
         const float d = 0.59f;
         const float e = 0.14f;
         
-        x = x * 0.6f;  
+        x = x * 0.7f;
         
         return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0f, 1.0f);
     }
@@ -209,6 +209,21 @@ public:
             for (int x = 0; x < anchura; ++x) {
                 const Color& p = at(x, y);
                 resultado.at(x, y) = Color(acesFilmic(p.r), acesFilmic(p.g), acesFilmic(p.b));
+            }
+        }
+        return resultado;
+    }
+    
+    // Exponential tone mapping
+    Imagen exponentialToneMapping(float exposureBoost = 1.5f) const {
+        Imagen resultado(anchura, altura);
+        for (int y = 0; y < altura; ++y) {
+            for (int x = 0; x < anchura; ++x) {
+                const Color& p = at(x, y);
+                float r = 1.0f - exp(-p.r * exposureBoost);
+                float g = 1.0f - exp(-p.g * exposureBoost);
+                float b = 1.0f - exp(-p.b * exposureBoost);
+                resultado.at(x, y) = Color(r, g, b);
             }
         }
         return resultado;

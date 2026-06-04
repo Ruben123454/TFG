@@ -112,7 +112,8 @@ __global__ void kernelRender(const Camara* camara, const Primitiva* primitivas, 
                             ImagenGPU imagen_directa,
                             TransientRender transientRenderer,
                             unsigned int* dev_counter, RegistroEntrenamiento* buffer_registros, unsigned int* counter_train, int max_cap_train,
-                            DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red, bool modo_reconstruccion) {
+                            DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red, bool modo_reconstruccion
+                            ) {
 
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -125,7 +126,8 @@ __global__ void kernelRender(const Camara* camara, const Primitiva* primitivas, 
         renderer.renderizar(*camara, escena, ancho_img, alto_img, x, y,
                             imagen_directa, transientRenderer, frame_number,
                             dev_counter, buffer_registros, counter_train, max_cap_train,
-                            buffer_inference, buffer_throughput, usar_red_inferencia, entrenar_red, modo_reconstruccion);
+                            buffer_inference, buffer_throughput, usar_red_inferencia, entrenar_red, modo_reconstruccion
+                            );
     }
 }
 
@@ -135,7 +137,8 @@ __global__ void kernelRender_tiny(const Camara* camara, const Primitiva* primiti
                             ImagenGPU imagen_directa,
                             TransientRender transientRenderer, 
                             unsigned int* dev_counter, RegistroEntrenamiento* buffer_registros, unsigned int* counter_train, int max_cap_train,
-                            DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red, bool modo_reconstruccion) {
+                            DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red, bool modo_reconstruccion
+                            ) {
 
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -148,7 +151,8 @@ __global__ void kernelRender_tiny(const Camara* camara, const Primitiva* primiti
         renderer.renderizar(*camara, escena, ancho_img, alto_img, x, y,
                             imagen_directa, transientRenderer, frame_number,
                             dev_counter, buffer_registros, counter_train, max_cap_train,
-                            buffer_inference, buffer_throughput, usar_red_inferencia, entrenar_red, modo_reconstruccion);
+                            buffer_inference, buffer_throughput, usar_red_inferencia, entrenar_red, modo_reconstruccion
+                            );
     }
 }
 
@@ -269,9 +273,9 @@ __global__ void kernelCalcularTargets(
     d.especular = reg.head.especular;
     d.tiempo = reg.head.tiempo;
 
-    d.color.r = logf(1.0f + target_final.r);
-    d.color.g = logf(1.0f + target_final.g);
-    d.color.b = logf(1.0f + target_final.b);
+    d.color.r = target_final.r; 
+    d.color.g = target_final.g;
+    d.color.b = target_final.b;
 
     buffer_training_final[idx] = d;
 }
@@ -314,7 +318,8 @@ void launchKernelRender(dim3 gridSize, dim3 blockSize,
                         ImagenGPU imagen_directa,
                         TransientRender transientRenderer,
                         unsigned int* dev_counter, RegistroEntrenamiento* buffer_registros, unsigned int* counter_train, int max_cap_train,
-                        DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red, bool modo_reconstruccion) {
+                        DatosMLP* buffer_inference, Color* buffer_throughput, bool usar_red_inferencia, bool entrenar_red, bool modo_reconstruccion
+                        ) {
     kernelRender<<<gridSize, blockSize>>>(
         camara, primitivas, num_primitivas, luces, num_luces,
         primitivas_malla, num_primitivas_malla, ancho_img, alto_img, samples_per_pixel, frame_number,

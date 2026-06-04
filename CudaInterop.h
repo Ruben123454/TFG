@@ -11,9 +11,33 @@ struct RenderGuiState {
 	bool renderingComplete = false;
 	bool requestSave = false;
 	bool configUpdate = false;
+	bool requestReconstruction = false;
 
-	// Modo de renderizado: 0 = Normal, 1 = Reconstrucción
+	// Modo de renderizado: 
+	// 0 = Normal (Pathtracer + Entrenamiento + Inferencia)
+	// 1 = Reconstrucción (Solo Inferencia)
+	// 2 = Pathtracer puro (sin entrenamiento ni inferencia)
+	// 3 = Pathtracer + Inferencia + Reconstrucción (combinado)
+	// 4 = Grid Search (búsqueda de hiperparámetros)
+	// 5 = Cálculo de métricas entre imágenes
 	int renderMode = 0;
+	bool runGridSearch = false;
+	char groundTruthFolder[256] = "../transient_gt_cb/";
+
+	// Modo métricas (comparar 2 imágenes/frames)
+	char metricsGroundTruthPath[512] = "../transient_gt_cb/frame_0.png";
+	char metricsImagePath[512] = "../transient/frame_0.png";
+	bool metricMSE = true;
+	bool metricMRSE = true;
+	bool metricPSNR = true;
+	bool metricSSIM = true;
+	bool metricsComputed = false;
+	bool metricsCalculationFailed = false;
+	float metricResultMSE = 0.0f;
+	float metricResultMRSE = 0.0f;
+	float metricResultPSNR = 0.0f;
+	float metricResultSSIM = 0.0f;
+	char metricsErrorMessage[512] = "";
 
 	// Parámetros de render editables desde la interfaz
 	int imageWidth = 512;
@@ -24,6 +48,7 @@ struct RenderGuiState {
 	// Transient
 	bool activarTransient = false;
 	int transientFrames = 300;
+	char transientOutputPath[256] = "../transient/";
 
 	// Control de modelo
 	bool loadModel = false;
@@ -36,6 +61,10 @@ struct RenderGuiState {
 
 	// Output
 	char outputFileName[256] = "output.png";
+	bool saveFramesPng = true;
+	bool saveFramesBin = true;
+	bool saveFramesBinAllFrames = true;
+	bool saveTransientVolume = true;
 
 	// MLP
 	bool saveMlpModel = false;

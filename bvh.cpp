@@ -29,7 +29,7 @@ void ArbolBVH::construirBVH(std::vector<Primitiva>& primitivas_host) {
     nodos_cpu.reserve(num_primitivas * 2);
     int nodo_actual = 0;
     
-    int raiz_idx = construirRecursivo(primitivas_host, indices, 0, num_primitivas, nodo_actual, nodos_cpu);
+    construirRecursivo(primitivas_host, indices, 0, num_primitivas, nodo_actual, nodos_cpu);
     
     num_nodos = nodos_cpu.size();
     

@@ -14,8 +14,6 @@
 #include <iostream>
 #include <cmath>
 
-using namespace std;
-
 class TransientRender {
 public:
     Color* d_datos;
@@ -32,7 +30,7 @@ public:
         // Usamos cudaMallocManaged para permitir usar RAM del sistema si falta VRAM
         cudaError_t err = cudaMallocManaged(&d_datos, total_pixels * sizeof(Color));
         if (err != cudaSuccess) {
-            cerr << "Error reservando memoria Transient: " << cudaGetErrorString(err) << std::endl;
+            std::cerr << "Error reservando memoria Transient: " << cudaGetErrorString(err) << std::endl;
         } else {
             cudaMemset(d_datos, 0, total_pixels * sizeof(Color));
         }
@@ -51,80 +49,6 @@ public:
             cudaMemset(d_datos, 0, total_pixels * sizeof(Color));
         }
     }
-
-    /*
-    // Método que agrega una muestra usando un kernel gaussiano
-    __device__ void agregarMuestra(int x, int y, double tiempo, const Color& color) {
-        if (x < 0 || x >= ancho || y < 0 || y >= alto) return;
-        if (tiempo < t_start || tiempo > t_end) return;
-        
-        double duracion_frame = (t_end - t_start) / num_frames;
-
-        // Fallback robusto: si sigma no es válido, acumulación en un único bin.
-        if (sigma <= 0.0) {
-            int frame_idx = static_cast<int>((tiempo - t_start) / duracion_frame);
-            if (frame_idx < 0) frame_idx = 0;
-            if (frame_idx >= num_frames) frame_idx = num_frames - 1;
-            size_t idx = ((size_t)frame_idx * ancho * alto) + (y * ancho + x);
-            d_datos[idx] = d_datos[idx] + color;
-            return;
-        }
-
-        // Para reducir ruido negro: splat temporal normalizado (conservación de energía).
-        int frame_centro = static_cast<int>((tiempo - t_start) / duracion_frame);
-        int radio_frames = max(1, (int)ceil(3.0 * sigma / duracion_frame));
-        int f0 = max(0, frame_centro - radio_frames);
-        int f1 = min(num_frames - 1, frame_centro + radio_frames);
-
-        double suma_pesos = 0.0;
-        for (int frame_idx = f0; frame_idx <= f1; frame_idx++) {
-            double tiempo_centro_frame = t_start + (frame_idx + 0.5) * duracion_frame;
-            double dt = tiempo_centro_frame - tiempo;
-            double peso = exp(-(dt * dt) / (2.0 * sigma * sigma));
-            suma_pesos += peso;
-        }
-
-        if (suma_pesos <= 0.0) return;
-
-        for (int frame_idx = f0; frame_idx <= f1; frame_idx++) {
-            double tiempo_centro_frame = t_start + (frame_idx + 0.5) * duracion_frame;
-            double dt = tiempo_centro_frame - tiempo;
-            double peso = exp(-(dt * dt) / (2.0 * sigma * sigma));
-            double peso_norm = peso / suma_pesos;
-
-            size_t idx = ((size_t)frame_idx * ancho * alto) + (y * ancho + x);
-            d_datos[idx] = d_datos[idx] + (color * (float)peso_norm);
-        }
-    }
-    */
-    
-    /*
-    // Método que agrega una muestra usando un kernel gaussiano
-    __device__ void agregarMuestra(int x, int y, double tiempo, const Color& color) {
-        if (x < 0 || x >= ancho || y < 0 || y >= alto) return;
-        if (tiempo < t_start || tiempo > t_end) return;
-        
-        double duracion_frame = (t_end - t_start) / num_frames;
-        
-        double prefactor = 1.0 / (2.0 * M_PI * sigma * sigma);
-        
-        // Iterar sobre todos los frames
-        for (int frame_idx = 0; frame_idx < num_frames; frame_idx++) {
-            // Calcular el tiempo central del frame actual
-            double tiempo_centro_frame = t_start + (frame_idx + 0.5) * duracion_frame;
-
-            // Calcular la diferencia de tiempo
-            double diferencia_tiempo = tiempo_centro_frame - tiempo;
-            
-            // Kernel gaussiano
-            double peso = prefactor * exp(-(diferencia_tiempo * diferencia_tiempo) / (2.0 * sigma * sigma));
-            
-            // Calcular el índice en la memoria lineal para el frame y píxel actual
-            size_t idx = ((size_t)frame_idx * ancho * alto) + (y * ancho + x);
-            d_datos[idx] = d_datos[idx] + (color * peso);
-        }
-    }
-    */
 
     __device__ void agregarMuestra(int x, int y, float tiempo, const Color& color) {
         if (x < 0 || x >= ancho || y < 0 || y >= alto) return;
@@ -172,49 +96,27 @@ public:
         }
     }
 
-    /*
-    // Método que agrega una muestra sin kernel (simple acumulación)
-    __device__ void agregarMuestra(int x, int y, double tiempo, const Color& color) {
-        if (x < 0 || x >= ancho || y < 0 || y >= alto) return;
-        if (tiempo < t_start || tiempo > t_end) return;
-        double duracion_frame = (t_end - t_start) / num_frames;
-        int frame_idx = static_cast<int>((tiempo - t_start) / duracion_frame);
-        if (frame_idx < 0 || frame_idx >= num_frames) return;
-        size_t idx = ((size_t)frame_idx * ancho * alto) + (y * ancho + x);
-        d_datos[idx] = d_datos[idx] + color;
-    }
-    */
-   
     // Método para pasar un frame de la GPU a la CPU
-    __host__ std::vector<Color> obtenerFrameHost(int frame_idx) {
+    __host__ std::vector<Color> obtenerFrameHost(int frame_idx, int muestras_totales) {
         std::vector<Color> buffer(ancho * alto);
         if (d_datos && frame_idx >= 0 && frame_idx < num_frames) {
             size_t offset = (size_t)frame_idx * ancho * alto;
             // Copia de Device a Host
             cudaMemcpy(buffer.data(), d_datos + offset, ancho * alto * sizeof(Color), cudaMemcpyDeviceToHost);
+            
+            // Promediar por el número de muestras
+            if (muestras_totales > 0) {
+                float inv_spp = 1.0f / (float)muestras_totales;
+                for (int i = 0; i < ancho * alto; i++) {
+                    buffer[i].r *= inv_spp;
+                    buffer[i].g *= inv_spp;
+                    buffer[i].b *= inv_spp;
+                }
+            }
         }
         return buffer;
     }
 
-    // Método para debug: imprimir estadísticas de un frame
-    __host__ void debugFrame(int frame_idx) {
-        auto frame = obtenerFrameHost(frame_idx);
-        double max_val = 0.0;
-        double avg_val = 0.0;
-        int pixels_iluminados = 0;
-        
-        for (int i = 0; i < ancho * alto; i++) {
-            double lum = frame[i].r + frame[i].g + frame[i].b;
-            if (lum > 0.001) pixels_iluminados++;
-            if (lum > max_val) max_val = lum;
-            avg_val += lum;
-        }
-        avg_val /= (ancho * alto);
-        
-        cout << "Frame " << frame_idx << ": max=" << max_val 
-                  << ", avg=" << avg_val << ", pixels_iluminados=" << pixels_iluminados 
-                  << "/" << (ancho * alto) << endl;
-    }
 };
 
 #endif

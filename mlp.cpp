@@ -13,70 +13,77 @@
 
 using namespace tcnn;
 
-ColorMLP::ColorMLP(uint32_t n_in, uint32_t n_out, uint32_t batch, tcnn::json config_override) 
-    : n_input_dims(n_in), n_output_dims(n_out), batch_size(batch) 
-{
-    // Si config_override no está vacía, usar. Si no, usar por defecto.
-    json config = config_override;
-    if (config.is_null()) {
-        config = {
-            {"encoding", {
-                {"otype", "Composite"},
-                {"nested", {
-                    //{
-                    //    {"n_dims_to_encode", 3}, // Posición (3 dims)
-                    //    {"otype", "Frequency"},
-                    //    {"n_frequencies", 12}
-                    //},
-                    {
-                        {"n_dims_to_encode", 4}, // Posición (3 dims) + Tiempo (1 dim) = 4 dims
-                        {"otype", "HashGrid"},
-                        {"n_levels", 16},
-                        {"n_features_per_level", 2},
-                        {"log2_hashmap_size", 21},//19
-                        {"base_resolution", 16},
-                        {"per_level_scale", 1.5}
-                    },
-                    /*
-                    {
-                        {"otype", "Frequency"},
-                        {"n_dims_to_encode", 1}, // Tiempo (1 dim)
-                        {"n_frequencies", 16}
-                    },
-                    */
-                    {
-                        {"n_dims_to_encode", 6}, // Dirección (3) + Normal (3) = 6 dims
-                        {"otype", "OneBlob"},
-                        {"n_bins", 4}
-                    },
-                    {
-                        {"n_dims_to_encode", 6}, // Albedos (6 dims) = Difuso (3) + Especular (3)
-                        {"otype", "Identity"}     
-                    }
-                }}
-            }},
-            {"network", {
-                {"otype", "FullyFusedMLP"},
-                {"activation", "ReLU"},
-                {"output_activation", "None"},
-                {"n_neurons", 64},
-                {"n_hidden_layers", 5}
-            }},
-            {"loss", {
-                {"otype", "L2"},
-            }},
-            {"optimizer", {
+tcnn::json configuracion_mlp(int samplesPerPixel) {
+    const int start_sample = std::min(4000, static_cast<int>(samplesPerPixel * 0.80f));
+
+    return {
+        {"encoding", {
+            {"otype", "Composite"},
+            {"nested", {
+                {
+                    {"n_dims_to_encode", 4}, // Posición (3) + Tiempo (1)
+                    {"otype", "HashGrid"},
+                    {"n_levels", 16},
+                    {"n_features_per_level", 2},
+                    {"log2_hashmap_size", 21},
+                    {"base_resolution", 16},
+                    {"per_level_scale", 1.5}
+                },
+                /*
+                {
+                    {"n_dims_to_encode", 4}, // Posición (3) + Tiempo (1)
+                    {"otype", "Frequency"},
+                    {"n_frequencies", 12},
+                },
+                */
+                {
+                    {"n_dims_to_encode", 6}, // Dirección (3) + Normal (3)
+                    {"otype", "OneBlob"},
+                    {"n_bins", 4}
+                },
+                {
+                    {"n_dims_to_encode", 6}, // Difuso (3) + Especular (3)
+                    {"otype", "Identity"}
+                }
+            }}
+        }},
+        {"network", {
+            {"otype", "FullyFusedMLP"},
+            {"activation", "ReLU"},
+            {"output_activation", "None"},
+            {"n_neurons", 64},
+            {"n_hidden_layers", 9}
+        }},
+        {"loss", {
+            {"otype", "L2"},
+        }},
+        {"optimizer", {
+            {"otype", "ExponentialDecay"},
+            {"decay_start", start_sample},
+            {"decay_interval", static_cast<int>(samplesPerPixel * 0.05f)}, // Decaer cada 5% del render restante
+            {"decay_base", 1.0f},
+            {"nested", {
                 {"otype", "EMA"},
-                {"decay", 0.999},
+                {"decay", 0.999f},
                 {"full_precision", true},
                 {"nested", {
                     {"otype", "Adam"},
-                    {"learning_rate", 5e-4}
+                    {"learning_rate", 5e-4f}
                 }}
             }}
-        };
-    }
+        }}
+    };
+}
 
+ColorMLP::ColorMLP(uint32_t n_in, uint32_t n_out, uint32_t batch, tcnn::json config_override, int samplesPerPixel, bool use_log_mapping) 
+    : n_input_dims(n_in), n_output_dims(n_out), batch_size(batch), use_log_mapping(use_log_mapping)
+{
+    json config;
+    if(config_override.is_null()){
+        config = configuracion_mlp(samplesPerPixel);
+    }else{
+        config = config_override;
+    }
     model = create_from_config(n_input_dims, n_output_dims, config);
     model_loaded = true;
     
@@ -123,7 +130,8 @@ float ColorMLP::train_step(DatosMLP* buffer_samples_gpu, uint32_t n_total_sample
         (int)n_output_dims,
         this->bounds,
         training_batch_inputs.data(),
-        training_batch_targets.data()
+        training_batch_targets.data(),
+        use_log_mapping
     );
 
     // Entrenamiento
@@ -176,7 +184,8 @@ void ColorMLP::inference(DatosMLP* buffer_samples_gpu, Color* output_gpu, uint32
         num_blocks, 256, stream,
         inference_outputs.data(),
         output_gpu,
-        n_samples
+        n_samples,
+        use_log_mapping
     );
 
     cudaStreamSynchronize(stream);
@@ -206,7 +215,7 @@ void ColorMLP::save_model(const std::string& filename) {
     }
 }
 
-bool ColorMLP::load_model(const std::string& filename) {
+bool ColorMLP::load_model(const std::string& filename, int samplesPerPixel) {
     try {
         // Leer archivo JSON (contiene solo pesos, no configuración)
         std::ifstream file(filename);
@@ -218,66 +227,8 @@ bool ColorMLP::load_model(const std::string& filename) {
         json data;
         file >> data;
         file.close();
-        
-        json config = {
-            {"encoding", {
-                {"otype", "Composite"},
-                {"nested", {
-                    //{
-                    //    {"n_dims_to_encode", 3}, // Posición (3 dims)
-                    //    {"otype", "Frequency"},
-                    //    {"n_frequencies", 12}
-                    //},
-                    {
-                        {"n_dims_to_encode", 4}, // Posición (3 dims) + Tiempo (1 dim) = 4 dims
-                        {"otype", "HashGrid"},
-                        {"n_levels", 16},
-                        {"n_features_per_level", 2},
-                        {"log2_hashmap_size", 21},
-                        {"base_resolution", 16},
-                        {"per_level_scale", 1.5}
-                    },
-                    /*
-                    {
-                        {"otype", "Frequency"},
-                        {"n_dims_to_encode", 1}, // Tiempo (1 dim)
-                        {"n_frequencies", 16}
-                    },
-                    */
-                    {
-                        {"n_dims_to_encode", 6}, // Dirección (3) + Normal (3) = 6 dims
-                        {"otype", "OneBlob"},
-                        {"n_bins", 4}
-                    },
-                    {
-                        {"n_dims_to_encode", 6}, // Albedos (6 dims) = Difuso (3) + Especular (3)
-                        {"otype", "Identity"}     
-                    }
-                }}
-            }},
-            {"network", {
-                {"otype", "FullyFusedMLP"},
-                {"activation", "ReLU"},
-                {"output_activation", "None"},
-                {"n_neurons", 64},
-                {"n_hidden_layers", 5}
-            }},
-            {"loss", {
-                {"otype", "L2"},
-            }},
-            {"optimizer", {
-                {"otype", "EMA"},
-                {"decay", 0.999},  // EMA decay
-                {"full_precision", true},
-                {"nested", {
-                    {"otype", "Adam"},
-                    {"learning_rate", 5e-4}
-                }}
-            }}
-        };
 
-
-        // 3. Crear el modelo usando create_from_config
+        json config = configuracion_mlp(samplesPerPixel);
         model = create_from_config(n_input_dims, n_output_dims, config);
 
         // 4. Deserializar los pesos usando el trainer

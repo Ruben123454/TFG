@@ -7,20 +7,16 @@
 
 #pragma once
 
-#include <memory>
 #include <tiny-cuda-nn/common.h>
 #include <tiny-cuda-nn/config.h>
 #include <tiny-cuda-nn/trainer.h>
 #include "mlp_types.h"
 
-// Precisión mixta (Half) para RTX
-using network_precision_t = __half;
-
 class ColorMLP {
 public:
 
     // Constructor
-    ColorMLP(uint32_t n_in, uint32_t n_out, uint32_t batch, tcnn::json config_override);
+    ColorMLP(uint32_t n_in, uint32_t n_out, uint32_t batch, tcnn::json config_override, int samplesPerPixel=0, bool use_log_mapping=true);
     
     // Destructor
     ~ColorMLP();
@@ -40,7 +36,7 @@ public:
     void save_model(const std::string& filename);
 
     // Cargar modelo desde disco (json con pesos)
-    bool load_model(const std::string& filename);
+    bool load_model(const std::string& filename, int samplesPerPixel);
 
 private:
     // Objetos internos de TCNN
@@ -67,4 +63,5 @@ private:
     uint32_t step_counter = 0;
 
     SceneBounds bounds;
+    bool use_log_mapping = true;
 };
